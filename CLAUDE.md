@@ -9,105 +9,218 @@
 
 ## Architecture
 
-### Entry Point
-- `src/main.go` - Main entry point, initializes Cobra commands and executes root command
+This project follows the **Standard Go Project Layout** with proper separation of concerns:
 
-### Core Modules
+### Directory Structure
 
-1. **Authentication (`src/auth.go`)**
-   - OAuth 2.0 flow implementation
-   - Token management (storage/retrieval)
-   - YouTube API service initialization
-   - Credentials: `~/.credentials/google_credentials.json`
-   - Token cache: `~/.credentials/youtube_token.json`
-
-2. **CLI Commands (`src/cli.go`)**
-   - All command implementations using Cobra framework
-   - Commands: list-playlists, get-playlist, download, search, get-video, create-playlist, delete-playlist, add-to-playlist
-   - Global flag variables for each command
-   - Color-coded output using fatih/color
-
-3. **Dependencies**
-   - `github.com/spf13/cobra` - CLI framework
-   - `github.com/fatih/color` - Terminal color output
-   - `golang.org/x/oauth2` - OAuth 2.0 authentication
-   - `google.golang.org/api/youtube/v3` - YouTube Data API client
-   - External: `yt-dlp` binary for video downloads
-
-## Key Design Patterns
-
-### Command Structure
-Each command follows this pattern:
-```go
-var cmdName = &cobra.Command{
-    Use:   "command-name <args>",
-    Short: "Description",
-    Args:  cobra.ExactArgs(n),
-    RunE:  runCommandName,
-}
-
-func runCommandName(cmd *cobra.Command, args []string) error {
-    ctx := context.Background()
-    // Implementation
-    return nil
-}
-```
-
-### Authentication Flow
-1. Read credentials from `~/.credentials/google_credentials.json`
-2. Check for cached token at `~/.credentials/youtube_token.json`
-3. If no token, initiate OAuth flow (browser-based)
-4. Save token for future use
-5. Return authenticated HTTP client
-
-### Error Handling
-- All functions return errors with context using `fmt.Errorf("message: %w", err)`
-- Errors are propagated to main and printed to stderr
-- Non-zero exit code on failure
-
-## Code Organization Compliance
-
-### Current Issues
-1. **init() functions** - Multiple init() functions for flag parsing (lines cli.go:31, 76, 147, 209, 324)
-   - Should be replaced with explicit initialization
-   - Flags should be registered in main.go or command constructors
-
-2. **Logging** - Uses fmt.Fprintf for all output
-   - Should use structured logging (slog)
-   - Distinguish between user output (stdout) and logs (stderr)
-
-### File Structure
 ```
 youtube-manager/
-├── Makefile           # Build automation
-├── README.md          # User documentation
-├── CLAUDE.md          # This file - AI documentation
-├── .gitignore         # Git ignore rules
-└── src/
-    ├── main.go        # Entry point (683 bytes)
-    ├── cli.go         # Command implementations (10,927 bytes)
-    ├── auth.go        # OAuth/API initialization (2,855 bytes)
-    ├── go.mod         # Module definition
-    └── go.sum         # Dependency lock
+├── Makefile                  # Build automation
+├── CLAUDE.md                 # This file - AI documentation
+├── README.md                 # User documentation
+├── go.mod                    # Go module definition
+├── go.sum                    # Dependency checksums
+├── cmd/                      # Main applications
+│   └── youtube-manager/      # Main entry point
+│       └── main.go           # Minimal - only initialization
+├── internal/                 # Private application code
+│   ├── auth/                 # OAuth 2.0 authentication
+│   │   └── auth.go           # Auth client and token management
+│   ├── cli/                  # CLI command implementations
+│   │   ├── cli.go            # Root command and registration
+│   │   ├── playlist.go       # Playlist commands
+│   │   ├── video.go          # Video commands
+│   │   └── download.go       # Download command
+│   ├── download/             # Video download functionality
+│   │   └── download.go       # yt-dlp wrapper
+│   └── youtube/              # YouTube API services
+│       ├── playlist.go       # Playlist operations
+│       └── video.go          # Video operations
+├── bin/                      # Compiled binaries (git-ignored)
+│   └── youtube-manager
+└── .gitignore                # Git ignore rules
 ```
+
+### Core Components
+
+#### 1. Authentication (`internal/auth`)
+
+**Purpose:** Handles OAuth 2.0 flow and YouTube API service initialization.
+
+**Key Type:**
+- `Client` - Manages credentials and token storage
+
+**Key Functions:**
+- `NewClient() (*Client, error)` - Creates new auth client with default paths
+- `GetYouTubeService(ctx) (*youtube.Service, error)` - Returns authenticated YouTube service
+- `getHTTPClient(ctx) (*http.Client, error)` - Returns authenticated HTTP client
+- `getTokenFromWeb(config) (*oauth2.Token, error)` - Initiates OAuth flow
+- `tokenFromFile() (*oauth2.Token, error)` - Loads cached token
+- `saveToken(token) error` - Saves token to file
+
+**Credentials:**
+- Location: `~/.credentials/google_credentials.json`
+- Token cache: `~/.credentials/youtube_token.json`
+- Scopes: `youtube.readonly`, `youtube.force-ssl`
+
+#### 2. CLI Commands (`internal/cli`)
+
+**Purpose:** Command-line interface using Cobra framework.
+
+**Files:**
+- `cli.go` - Root command and command registration
+- `playlist.go` - Playlist-related commands (list, get, create, delete, add-to)
+- `video.go` - Video-related commands (search, get-video)
+- `download.go` - Download command
+
+**Pattern:**
+- Each command has a `create*Cmd()` function that returns `*cobra.Command`
+- Each command has a corresponding `run*()` function with business logic
+- Flags are scoped to their command (no global flag variables)
+
+#### 3. YouTube Services (`internal/youtube`)
+
+**Purpose:** Business logic for YouTube API operations.
+
+**Types:**
+- `PlaylistService` - Playlist CRUD operations
+- `VideoService` - Video search and retrieval
+
+**Key Functions:**
+- Playlist: `List()`, `GetItems()`, `Create()`, `Delete()`, `AddVideo()`
+- Video: `Get()`, `Search()`
+- Helper functions: `PrintPlaylists()`, `PrintPlaylistItems()`, `PrintVideo()`, `PrintSearchResults()`
+
+#### 4. Download (`internal/download`)
+
+**Purpose:** Video download using yt-dlp.
+
+**Type:**
+- `Downloader` - Manages download options and execution
+
+**Key Functions:**
+- `NewDownloader(outputDir, format, audioOnly) *Downloader` - Creates new downloader
+- `Download(url) error` - Downloads video from URL
+
+### Dependencies
+
+- `github.com/spf13/cobra` - CLI framework
+- `golang.org/x/oauth2` - OAuth 2.0 authentication
+- `google.golang.org/api/youtube/v3` - YouTube Data API client
+- External: `yt-dlp` binary for video downloads
+
+## Go Standards Compliance
+
+### Followed ✅
+
+1. **No `/src` directory** - Code is in `cmd/` and `internal/`
+2. **No `init()` functions** - Explicit initialization in `main()`
+3. **Structured logging** - Using `slog` for all logging
+4. **Clear separation** - Domain logic separated from CLI
+5. **Proper error handling** - All errors wrapped with context using `%w`
+6. **Context as first parameter** - All service methods take `context.Context`
+7. **Documented exports** - All exported types and functions documented
+8. **No code duplication** - Shared logic extracted into services
+9. **One responsibility per function** - Each function has single purpose
+10. **Object-oriented design** - Using structs with methods for services
+
+### Code Organization
+
+- **Entry point** (`cmd/youtube-manager/main.go`): Minimal - only initialization and wiring
+- **Business logic** (`internal/`): All implementation details
+- **Packages by domain**: `auth`, `youtube`, `download`, `cli`
+- **No `pkg/`**: This is an application, not a library
 
 ## Common Tasks
 
 ### Adding a New Command
-1. Create command variable in `cli.go`
-2. Implement RunE function
-3. Register command in `main.go` using `rootCmd.AddCommand()`
-4. Add flags if needed using command.Flags()
+
+1. Decide which CLI file it belongs to (`playlist.go`, `video.go`, or new file)
+2. Create `create*Cmd()` function returning `*cobra.Command`
+3. Create `run*()` function with business logic
+4. Register in appropriate `register*Commands()` function
+5. Add service methods to `internal/youtube` if needed
+
+Example:
+```go
+// In internal/cli/playlist.go
+func createMyCmd() *cobra.Command {
+    var myFlag string
+
+    cmd := &cobra.Command{
+        Use:   "my-command <arg>",
+        Short: "Description",
+        Args:  cobra.ExactArgs(1),
+        RunE: func(cmd *cobra.Command, args []string) error {
+            return runMyCommand(cmd.Context(), args[0], myFlag)
+        },
+    }
+
+    cmd.Flags().StringVar(&myFlag, "flag", "default", "Help text")
+    return cmd
+}
+
+func runMyCommand(ctx context.Context, arg, flag string) error {
+    // Implementation
+}
+
+// Register in registerPlaylistCommands()
+func registerPlaylistCommands() {
+    rootCmd.AddCommand(createListPlaylistsCmd())
+    // ... other commands ...
+    rootCmd.AddCommand(createMyCmd())  // Add here
+}
+```
+
+### Adding a New Service Method
+
+1. Add method to appropriate service (`PlaylistService` or `VideoService`)
+2. Return errors with context: `fmt.Errorf("operation failed: %w", err)`
+3. Add helper print function if needed
+4. Document the function
 
 ### Modifying Authentication Scopes
-- Update `scopes` variable in `auth.go:22-25`
-- Delete cached token: `rm ~/.credentials/youtube_token.json`
-- Re-authenticate on next run
+
+1. Update `scopes` variable in `internal/auth/auth.go`
+2. Delete cached token: `rm ~/.credentials/youtube_token.json`
+3. Re-authenticate on next run
 
 ### Testing Changes
+
 ```bash
-cd src
-go run . <command> <args>
+# Build
+make build
+
+# Run
+./bin/youtube-manager <command> <args>
+
+# Format and check
+make check
+```
+
+## Build and Installation
+
+```bash
+# Build
+make build
+
+# Install to /usr/local/bin
+make install
+
+# Install to custom directory
+TARGET=/usr/bin make install
+
+# Uninstall
+make uninstall
+
+# Clean
+make clean
+
+# Download dependencies
+make deps
+
+# Run all checks (format, vet, test)
+make check
 ```
 
 ## API Rate Limits
@@ -120,67 +233,97 @@ YouTube Data API v3 has daily quota limits:
 ## Security Considerations
 
 1. **Credentials Storage**
-   - OAuth credentials stored at `~/.credentials/` with 0700 permissions
-   - Token file has 0600 permissions
+   - OAuth credentials: `~/.credentials/google_credentials.json` (0700 permissions)
+   - Token cache: `~/.credentials/youtube_token.json` (0600 permissions)
    - Never commit credentials to git
 
 2. **Scopes**
    - `youtube.readonly` - View-only access
-   - `youtube.force-ssl` - Required for write operations (create/delete playlists)
+   - `youtube.force-ssl` - Required for write operations
+
+## Logging
+
+- Uses structured logging with `slog`
+- Default level: `Error` (user-facing CLI)
+- Logs to stderr
+- User output goes to stdout
+
+## Error Handling
+
+- All errors wrapped with context using `%w`
+- Service layer returns detailed errors
+- CLI layer displays user-friendly messages
+- Logging for debugging information
+
+## Code Style
+
+### File Element Order
+
+1. Package declaration with documentation
+2. Import statements (grouped: stdlib, external, internal)
+3. Constants
+4. Types and interfaces
+5. Constructor functions (`New*`)
+6. Methods (grouped by receiver, alphabetically)
+7. Helper functions (alphabetically)
+
+### Naming Conventions
+
+- Clear and concise names
+- No abbreviations (except standard: `id`, `api`, `ctx`, `err`)
+- Boolean variables: `is*`, `has*`, `should*` prefixes
+- Functions: verb or verb+noun form
+- Exported types and functions are documented
 
 ## Future Improvements
 
-1. Replace init() functions with explicit flag registration
-2. Add structured logging (slog)
-3. Split cli.go into separate files per functionality:
-   - playlist_commands.go
-   - video_commands.go
-   - download_commands.go
-4. Add unit tests for each command
-5. Add configuration file support (~/.youtube-manager/config.yaml)
-6. Implement retry logic for API failures
-7. Add batch operations support
+1. Add unit tests for all packages
+2. Add integration tests for CLI commands
+3. Implement configuration file support (`~/.youtube-manager/config.yaml`)
+4. Add retry logic for API failures with exponential backoff
+5. Add batch operations support
+6. Consider adding telemetry/metrics
+7. Add progress bars for downloads
+8. Support for multiple video downloads
+9. Playlist export/import functionality
 
-## Golang Standards Compliance
+## Migration from Old Structure
 
-### Followed ✅
-- Error wrapping with %w
-- Context as first parameter
-- Clear function and variable naming
-- No code duplication
-- Proper error handling (no ignored errors)
+The codebase has been refactored from the old `src/` structure to follow Go standards:
 
-### Needs Improvement ⚠️
-- Remove init() functions (forbidden per standards)
-- Add structured logging
-- Consider moving from src/ to root-level package structure
-- Add comprehensive tests
-- Document all exported functions
-
-## Build and Installation
-
-```bash
-# Build
-make build
-
-# Install
-make install
-
-# Test
-make test
-
-# Format
-make fmt
-
-# All checks
-make check
+**Old Structure:**
+```
+src/
+├── main.go (683 bytes)
+├── cli.go (10,927 bytes - all commands)
+└── auth.go (2,855 bytes)
 ```
 
-## Environment Variables
+**New Structure:**
+```
+cmd/youtube-manager/main.go (minimal entry point)
+internal/
+├── auth/auth.go (authentication)
+├── cli/ (commands split by domain)
+├── youtube/ (business logic)
+└── download/ (download functionality)
+```
 
-None currently used. Authentication is file-based.
+**Key Changes:**
+- ✅ Removed `/src` directory
+- ✅ Removed all `init()` functions
+- ✅ Added structured logging with `slog`
+- ✅ Split large `cli.go` into domain-specific files
+- ✅ Extracted business logic into service packages
+- ✅ Added comprehensive documentation
+- ✅ Proper package structure with `cmd/` and `internal/`
+- ✅ Removed `fatih/color` dependency (using emojis for visual feedback)
 
 ## Exit Codes
 
 - 0: Success
-- 1: Error (from cobra.Command execution or manual os.Exit(1))
+- 1: Error (from command execution)
+
+## Environment Variables
+
+None currently used. All configuration is file-based.

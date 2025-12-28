@@ -1,5 +1,6 @@
 # Binaries
-youtube-manager
+bin/
+/youtube-manager
 
 # Go
 *.exe

@@ -132,23 +132,32 @@ make check  # runs fmt, vet, and test
 ### Clean Build Artifacts
 ```bash
 make clean      # removes binary only
-make clean-all  # removes binary, go.mod, and go.sum
+```
+
+### Update Dependencies
+```bash
+make deps       # downloads and tidies dependencies
 ```
 
 ## Project Structure
 
 ```
 youtube-manager/
-├── Makefile              # Build and installation targets
-├── README.md             # This file
-├── CLAUDE.md             # AI-oriented documentation
-├── src/                  # Go source code
-│   ├── main.go          # Entry point and command registration
-│   ├── cli.go           # CLI command implementations
-│   ├── auth.go          # OAuth authentication
-│   ├── go.mod           # Go module definition
-│   └── go.sum           # Dependency checksums
-└── youtube-manager      # Compiled binary
+├── Makefile                  # Build and installation targets
+├── README.md                 # This file
+├── CLAUDE.md                 # AI-oriented documentation
+├── go.mod                    # Go module definition
+├── go.sum                    # Dependency checksums
+├── cmd/                      # Main applications
+│   └── youtube-manager/      # Entry point
+│       └── main.go
+├── internal/                 # Private application code
+│   ├── auth/                 # OAuth 2.0 authentication
+│   ├── cli/                  # CLI command implementations
+│   ├── download/             # Video download functionality
+│   └── youtube/              # YouTube API services
+└── bin/                      # Compiled binaries
+    └── youtube-manager
 ```
 
 ## OAuth Scopes
