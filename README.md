@@ -30,9 +30,10 @@ A command-line tool for managing YouTube content using YouTube Data API v3 and y
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project or select an existing one
 3. Enable the YouTube Data API v3
-4. Create OAuth 2.0 credentials (Desktop application)
-5. Download the credentials JSON file
-6. Save it as `~/.credentials/google_credentials.json`
+4. Create OAuth 2.0 credentials (Web application)
+5. Add `http://localhost:8000/oauth2callback` as an authorized redirect URI
+6. Download the credentials JSON file
+7. Save it as `~/.credentials/scm-pwd-web.json`
 
 ### 2. Build and Install
 
@@ -51,7 +52,13 @@ TARGET=/path/to/bin make install
 
 ### Authentication
 
-On first use, the tool will open a browser for OAuth authorization. The token will be saved to `~/.credentials/youtube_token.json`.
+On first use, the tool will:
+1. Start a local web server on port 8000
+2. Automatically open your browser for OAuth authorization
+3. Capture the authorization callback automatically
+4. Save the token to `~/.credentials/youtube-token.json`
+
+No manual copy/paste of authorization codes is required.
 
 ### Commands
 
@@ -169,7 +176,7 @@ The tool requests the following YouTube API scopes:
 ## Troubleshooting
 
 ### "Credentials file not found"
-Ensure you've placed your OAuth credentials at `~/.credentials/google_credentials.json`
+Ensure you've placed your OAuth credentials at `~/.credentials/scm-pwd-web.json`
 
 ### "yt-dlp not found"
 Install yt-dlp using:
@@ -179,9 +186,12 @@ Install yt-dlp using:
 ### Authentication errors
 Delete the token file and re-authenticate:
 ```bash
-rm ~/.credentials/youtube_token.json
+rm ~/.credentials/youtube-token.json
 youtube-manager list-playlists
 ```
+
+### "Port 8000 already in use"
+Another process is using port 8000. Either stop that process or wait for it to free up the port.
 
 ## License
 
