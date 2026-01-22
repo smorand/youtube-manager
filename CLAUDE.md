@@ -59,9 +59,10 @@ youtube-manager/
 - `saveToken(token) error` - Saves token to file
 
 **Credentials:**
-- Location: `~/.credentials/google_credentials.json`
-- Token cache: `~/.credentials/youtube_token.json`
+- Location: `~/.credentials/scm-pwd-web.json`
+- Token cache: `~/.credentials/youtube-token.json`
 - Scopes: `youtube.readonly`, `youtube.force-ssl`
+- OAuth callback: Local server on port 8000 (`http://localhost:8000/oauth2callback`)
 
 #### 2. CLI Commands (`internal/cli`)
 
@@ -182,8 +183,20 @@ func registerPlaylistCommands() {
 ### Modifying Authentication Scopes
 
 1. Update `scopes` variable in `internal/auth/auth.go`
-2. Delete cached token: `rm ~/.credentials/youtube_token.json`
+2. Delete cached token: `rm ~/.credentials/youtube-token.json`
 3. Re-authenticate on next run
+
+### OAuth Flow
+
+The authentication uses an automatic local web server flow:
+1. A local HTTP server starts on port 8000
+2. The browser opens automatically to Google's consent screen
+3. After authorization, Google redirects to `http://localhost:8000/oauth2callback`
+4. The server captures the authorization code automatically
+5. The token is exchanged and saved to `~/.credentials/youtube-token.json`
+6. The server shuts down automatically
+
+**Note:** Ensure `http://localhost:8000/oauth2callback` is configured as an authorized redirect URI in your Google Cloud Console OAuth credentials.
 
 ### Testing Changes
 
@@ -233,8 +246,8 @@ YouTube Data API v3 has daily quota limits:
 ## Security Considerations
 
 1. **Credentials Storage**
-   - OAuth credentials: `~/.credentials/google_credentials.json` (0700 permissions)
-   - Token cache: `~/.credentials/youtube_token.json` (0600 permissions)
+   - OAuth credentials: `~/.credentials/scm-pwd-web.json` (0700 permissions)
+   - Token cache: `~/.credentials/youtube-token.json` (0600 permissions)
    - Never commit credentials to git
 
 2. **Scopes**

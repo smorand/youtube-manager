@@ -8,7 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -17,8 +20,10 @@ import (
 )
 
 const (
-	credentialsFile = "google_credentials.json"
-	tokenFile       = "youtube_token.json"
+	credentialsFile = "scm-pwd-web.json"
+	tokenFile       = "youtube-token.json"
+	callbackPort    = 8000
+	callbackPath    = "/oauth2callback"
 )
 
 var scopes = []string{
@@ -87,23 +92,120 @@ func (c *Client) getHTTPClient(ctx context.Context) (*http.Client, error) {
 	return config.Client(ctx, token), nil
 }
 
-// getTokenFromWeb initiates OAuth flow and returns a token.
+// getTokenFromWeb initiates OAuth flow using a local web server to capture the callback.
 func (c *Client) getTokenFromWeb(config *oauth2.Config) (*oauth2.Token, error) {
-	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
-	fmt.Printf("Go to the following link in your browser:\n%v\n\n", authURL)
-	fmt.Printf("Enter authorization code: ")
+	// Set the redirect URL to our local callback server
+	redirectURL := fmt.Sprintf("http://localhost:%d%s", callbackPort, callbackPath)
+	config.RedirectURL = redirectURL
 
-	var authCode string
-	if _, err := fmt.Scan(&authCode); err != nil {
-		return nil, fmt.Errorf("unable to read authorization code: %w", err)
+	// Channel to receive the authorization code
+	codeChan := make(chan string, 1)
+	errChan := make(chan error, 1)
+
+	// Create the callback handler
+	mux := http.NewServeMux()
+	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
+		code := r.URL.Query().Get("code")
+		if code == "" {
+			errMsg := r.URL.Query().Get("error")
+			if errMsg == "" {
+				errMsg = "no authorization code received"
+			}
+			errChan <- fmt.Errorf("authorization failed: %s", errMsg)
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<!DOCTYPE html><html><body>
+				<h1>Authorization Failed</h1>
+				<p>%s</p>
+				<p>You can close this window.</p>
+			</body></html>`, errMsg)
+			return
+		}
+
+		codeChan <- code
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+			<h1>Authorization Successful!</h1>
+			<p>You can close this window and return to the terminal.</p>
+			<script>window.close();</script>
+		</body></html>`)
+	})
+
+	// Start the local server
+	server := &http.Server{
+		Addr:              fmt.Sprintf(":%d", callbackPort),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errChan <- fmt.Errorf("failed to start callback server: %w", err)
+		}
+	}()
+
+	// Give the server a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Generate the auth URL and open it in the browser
+	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
+	fmt.Printf("Opening browser for authorization...\n")
+	fmt.Printf("If the browser doesn't open automatically, visit:\n%s\n\n", authURL)
+
+	if err := openBrowser(authURL); err != nil {
+		slog.Warn("Failed to open browser automatically", "error", err)
+	}
+
+	// Wait for the authorization code or error
+	var authCode string
+	select {
+	case authCode = <-codeChan:
+		// Success
+	case err := <-errChan:
+		shutdownServer(server)
+		return nil, err
+	case <-time.After(5 * time.Minute):
+		shutdownServer(server)
+		return nil, fmt.Errorf("authorization timed out after 5 minutes")
+	}
+
+	// Shutdown the server
+	shutdownServer(server)
+
+	// Exchange the authorization code for a token
 	token, err := config.Exchange(context.Background(), authCode)
 	if err != nil {
-		return nil, fmt.Errorf("unable to retrieve token from web: %w", err)
+		return nil, fmt.Errorf("unable to exchange authorization code: %w", err)
 	}
 
+	fmt.Println("Authorization successful!")
 	return token, nil
+}
+
+// openBrowser opens the specified URL in the default browser.
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+
+	return cmd.Start()
+}
+
+// shutdownServer gracefully shuts down the HTTP server.
+func shutdownServer(server *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		slog.Warn("Error shutting down callback server", "error", err)
+	}
 }
 
 // tokenFromFile loads a token from the token file.
