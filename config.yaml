@@ -1,0 +1,35 @@
+prefix: scmytm
+project_name: youtube-manager-mcp
+env: prd
+description: YouTube Manager MCP Server - Cloud Run deployment
+
+gcp:
+  project_id: project-fb127223-bfef-43d1-94e
+  location: europe-west1
+  services:
+    - run.googleapis.com
+    - secretmanager.googleapis.com
+    - cloudbuild.googleapis.com
+    - artifactregistry.googleapis.com
+    - cloudresourcemanager.googleapis.com
+    - iam.googleapis.com
+    - dns.googleapis.com
+
+  resources:
+    cloud_run:
+      name: youtube-manager-mcp
+      region: europe-west1
+      cpu: "1"
+      memory: 512Mi
+      min_instances: 0
+      max_instances: 3
+      allow_unauthenticated: true
+      custom_domain: ytm.mcp.scm-platform.org
+
+    artifact_registry:
+      name: youtube-manager
+      format: DOCKER
+
+secrets:
+  oauth_credentials: scm-pwd-ytm-oauth-creds
+  youtube_token: scm-pwd-ytm-token

@@ -37,17 +37,35 @@ type Client struct {
 	tokenPath       string
 }
 
-// NewClient creates a new auth client with default credentials paths.
+// NewClient creates a new auth client with configurable credentials paths.
+// File paths are resolved in order:
+//  1. OAUTH_CREDENTIALS_FILE / YOUTUBE_TOKEN_FILE env vars (exact file paths)
+//  2. CREDENTIALS_DIR env var (directory containing both files)
+//  3. ~/.credentials/ (default)
 func NewClient() (*Client, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user home directory: %w", err)
+	credPath := os.Getenv("OAUTH_CREDENTIALS_FILE")
+	tokenPath := os.Getenv("YOUTUBE_TOKEN_FILE")
+
+	if credPath == "" || tokenPath == "" {
+		credDir := os.Getenv("CREDENTIALS_DIR")
+		if credDir == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get user home directory: %w", err)
+			}
+			credDir = filepath.Join(home, ".credentials")
+		}
+		if credPath == "" {
+			credPath = filepath.Join(credDir, credentialsFile)
+		}
+		if tokenPath == "" {
+			tokenPath = filepath.Join(credDir, tokenFile)
+		}
 	}
 
-	credDir := filepath.Join(home, ".credentials")
 	return &Client{
-		credentialsPath: filepath.Join(credDir, credentialsFile),
-		tokenPath:       filepath.Join(credDir, tokenFile),
+		credentialsPath: credPath,
+		tokenPath:       tokenPath,
 	}, nil
 }
 

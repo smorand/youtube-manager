@@ -203,6 +203,69 @@ make clean
 make check
 ```
 
+## Cloud Run Deployment
+
+**URL:** `https://ytm.mcp.scm-platform.org`
+**GCP Project:** `project-fb127223-bfef-43d1-94e`
+**Region:** `europe-west1`
+
+### Infrastructure (Terraform)
+
+Two-phase deployment using `init/` and `iac/` directories:
+
+```
+init/                           # One-time setup (local state)
+├── provider.tf                 # GCP provider (no backend)
+├── local.tf                    # Config loader from config.yaml
+├── services.tf                 # API enablement
+├── service-accounts.tf         # Cloud Build + Cloud Run SAs
+└── state-backend.tf            # GCS bucket for terraform state
+
+iac/                            # Main infrastructure (GCS backend)
+├── provider.tf.template        # Template (before init-deploy)
+├── provider.tf                 # Generated (after init-deploy)
+├── local.tf                    # Config loader
+├── docker.tf                   # Docker build + push via kreuzwerker/docker
+├── secrets.tf                  # Secret Manager (OAuth creds + YouTube token)
+└── workload-mcp.tf             # Artifact Registry, Cloud Run, DNS, IAM
+```
+
+### Deployment Commands
+
+```bash
+# First time setup
+make init-plan          # Plan initialization
+make init-deploy        # Deploy state backend + service accounts
+
+# Deploy infrastructure
+make plan               # Plan main infrastructure
+make deploy             # Deploy (Docker build + Cloud Run + DNS)
+
+# Manage secrets (manual step after first deploy)
+gcloud secrets versions add scm-pwd-ytm-oauth-creds \
+  --data-file=$HOME/.credentials/scm-pwd-web.json \
+  --project=project-fb127223-bfef-43d1-94e
+
+gcloud secrets versions add scm-pwd-ytm-token \
+  --data-file=$HOME/.credentials/youtube-token.json \
+  --project=project-fb127223-bfef-43d1-94e
+```
+
+### Transport Modes
+
+The MCP server supports two transport modes:
+- **Stdio** (default): Used locally, `PORT` env var not set
+- **HTTP** (Cloud Run): When `PORT` env var is set, serves on that port with `/health` and `/mcp` endpoints
+
+### Credentials Resolution
+
+Auth credentials are resolved in order:
+1. `OAUTH_CREDENTIALS_FILE` / `YOUTUBE_TOKEN_FILE` env vars (exact file paths)
+2. `CREDENTIALS_DIR` env var (directory containing both files)
+3. `~/.credentials/` (default)
+
+On Cloud Run, secrets are mounted as files via Secret Manager volumes.
+
 ## API Rate Limits
 
 YouTube Data API v3 has daily quota limits:
@@ -222,8 +285,9 @@ YouTube Data API v3 has daily quota limits:
    - `youtube.force-ssl` - Required for write operations
 
 3. **MCP Server**
-   - Auth initialized before stdio transport starts
-   - All status messages to stderr (stdout reserved for JSON-RPC)
+   - Auth initialized before transport starts
+   - All status messages to stderr (stdout reserved for JSON-RPC in stdio mode)
+   - Cloud Run: secrets mounted via Secret Manager volumes
 
 ## Logging
 
@@ -278,4 +342,10 @@ YouTube Data API v3 has daily quota limits:
 
 ## Environment Variables
 
-None currently used. All configuration is file-based.
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PORT` | HTTP listen port (enables HTTP mode) | not set (stdio mode) |
+| `OAUTH_CREDENTIALS_FILE` | Path to OAuth credentials JSON | `~/.credentials/scm-pwd-web.json` |
+| `YOUTUBE_TOKEN_FILE` | Path to YouTube token JSON | `~/.credentials/youtube-token.json` |
+| `CREDENTIALS_DIR` | Directory containing both credential files | `~/.credentials/` |
+| `ENVIRONMENT` | Deployment environment label | not set |

@@ -161,6 +161,57 @@ claude mcp add youtube-manager ./bin/youtube-manager-mcp-darwin-arm64
 echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | ./bin/youtube-manager-mcp-darwin-arm64
 ```
 
+## Cloud Run Deployment
+
+The MCP server can be deployed to Google Cloud Run for remote access.
+
+**Live URL:** `https://ytm.mcp.scm-platform.org`
+
+### Prerequisites
+
+- Google Cloud SDK (`gcloud`) authenticated
+- Terraform >= 1.0
+- Docker
+
+### First-Time Setup
+
+```bash
+# 1. Deploy initialization (state backend, service accounts, APIs)
+make init-plan
+make init-deploy
+
+# 2. Upload secrets to Secret Manager
+gcloud secrets versions add scm-pwd-ytm-oauth-creds \
+  --data-file=$HOME/.credentials/scm-pwd-web.json \
+  --project=project-fb127223-bfef-43d1-94e
+
+gcloud secrets versions add scm-pwd-ytm-token \
+  --data-file=$HOME/.credentials/youtube-token.json \
+  --project=project-fb127223-bfef-43d1-94e
+
+# 3. Deploy infrastructure (Docker build + Cloud Run + DNS)
+make plan
+make deploy
+```
+
+### Updating
+
+After code changes, redeploy with:
+```bash
+make deploy
+```
+
+### Terraform Targets
+
+| Target | Description |
+|--------|-------------|
+| `make plan` | Plan main infrastructure changes |
+| `make deploy` | Deploy (Docker build + push + Cloud Run) |
+| `make undeploy` | Destroy main infrastructure |
+| `make init-plan` | Plan initialization resources |
+| `make init-deploy` | Deploy initialization (one-time) |
+| `make terraform-help` | Show detailed Terraform help |
+
 ## Development
 
 ### Build
@@ -193,9 +244,11 @@ make clean      # removes binaries only
 
 ```
 youtube-manager/
-├── Makefile                  # Build and installation targets
+├── Makefile                  # Build automation + Terraform targets
 ├── README.md                 # This file
 ├── CLAUDE.md                 # AI-oriented documentation
+├── config.yaml               # GCP deployment configuration
+├── Dockerfile                # Multi-stage Docker build for Cloud Run
 ├── go.mod                    # Go module definition
 ├── go.sum                    # Dependency checksums
 ├── cmd/                      # Main applications
