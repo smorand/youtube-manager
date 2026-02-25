@@ -3,9 +3,9 @@
 ## Project Overview
 
 **Name:** youtube-manager
-**Type:** CLI Application
+**Type:** CLI Application + MCP Server
 **Language:** Go 1.21+
-**Purpose:** Manage YouTube content using YouTube Data API v3 and yt-dlp
+**Purpose:** Manage YouTube content using YouTube Data API v3, with MCP server for AI assistant integration
 
 ## Architecture
 
@@ -21,8 +21,10 @@ youtube-manager/
 ├── go.mod                    # Go module definition
 ├── go.sum                    # Dependency checksums
 ├── cmd/                      # Main applications
-│   └── youtube-manager/      # Main entry point
-│       └── main.go           # Minimal - only initialization
+│   ├── youtube-manager/      # CLI entry point
+│   │   └── main.go           # Minimal - only initialization
+│   └── youtube-manager-mcp/  # MCP server entry point
+│       └── main.go           # Auth init + stdio transport
 ├── internal/                 # Private application code
 │   ├── auth/                 # OAuth 2.0 authentication
 │   │   └── auth.go           # Auth client and token management
@@ -32,12 +34,20 @@ youtube-manager/
 │   │   ├── video.go          # Video commands
 │   │   └── download.go       # Download command
 │   ├── download/             # Video download functionality
-│   │   └── download.go       # yt-dlp wrapper
+│   │   ├── download.go       # Downloader with cache + ffmpeg integration
+│   │   ├── cache.go          # /tmp cache with 24h expiration
+│   │   └── ffmpeg.go         # ffmpeg wrapper for extraction + conversion
+│   ├── mcpserver/            # MCP server implementation
+│   │   ├── server.go         # Server creation, auth, tool registration
+│   │   ├── playlist_tools.go # 5 playlist tool handlers
+│   │   ├── video_tools.go    # 2 video tool handlers
+│   │   └── download_tools.go # 1 download tool handler
 │   └── youtube/              # YouTube API services
 │       ├── playlist.go       # Playlist operations
 │       └── video.go          # Video operations
 ├── bin/                      # Compiled binaries (git-ignored)
-│   └── youtube-manager
+│   ├── youtube-manager-*     # CLI binaries
+│   └── youtube-manager-mcp-* # MCP server binaries
 └── .gitignore                # Git ignore rules
 ```
 
@@ -53,26 +63,17 @@ youtube-manager/
 **Key Functions:**
 - `NewClient() (*Client, error)` - Creates new auth client with default paths
 - `GetYouTubeService(ctx) (*youtube.Service, error)` - Returns authenticated YouTube service
-- `getHTTPClient(ctx) (*http.Client, error)` - Returns authenticated HTTP client
-- `getTokenFromWeb(config) (*oauth2.Token, error)` - Initiates OAuth flow
-- `tokenFromFile() (*oauth2.Token, error)` - Loads cached token
-- `saveToken(token) error` - Saves token to file
 
 **Credentials:**
 - Location: `~/.credentials/scm-pwd-web.json`
 - Token cache: `~/.credentials/youtube-token.json`
 - Scopes: `youtube.readonly`, `youtube.force-ssl`
 - OAuth callback: Local server on port 8000 (`http://localhost:8000/oauth2callback`)
+- All auth status messages output to stderr (MCP-safe)
 
 #### 2. CLI Commands (`internal/cli`)
 
 **Purpose:** Command-line interface using Cobra framework.
-
-**Files:**
-- `cli.go` - Root command and command registration
-- `playlist.go` - Playlist-related commands (list, get, create, delete, add-to)
-- `video.go` - Video-related commands (search, get-video)
-- `download.go` - Download command
 
 **Pattern:**
 - Each command has a `create*Cmd()` function that returns `*cobra.Command`
@@ -84,57 +85,71 @@ youtube-manager/
 **Purpose:** Business logic for YouTube API operations.
 
 **Types:**
-- `PlaylistService` - Playlist CRUD operations
-- `VideoService` - Video search and retrieval
-
-**Key Functions:**
-- Playlist: `List()`, `GetItems()`, `Create()`, `Delete()`, `AddVideo()`
-- Video: `Get()`, `Search()`
-- Helper functions: `PrintPlaylists()`, `PrintPlaylistItems()`, `PrintVideo()`, `PrintSearchResults()`
+- `PlaylistService` - Playlist CRUD operations: `List()`, `GetItems()`, `Create()`, `Delete()`, `AddVideo()`
+- `VideoService` - Video operations: `Get()`, `Search()`
 
 #### 4. Download (`internal/download`)
 
-**Purpose:** Video download using yt-dlp.
+**Purpose:** Video download with caching and post-processing.
 
-**Type:**
+**Types:**
 - `Downloader` - Manages download options and execution
+- `Cache` - `/tmp/youtube-manager-cache/` with 24h expiration
+- `ProcessOpts` - ffmpeg processing options
 
 **Key Functions:**
-- `NewDownloader(outputDir, format, audioOnly) *Downloader` - Creates new downloader
-- `Download(url) error` - Downloads video from URL
+- `NewDownloader(outputDir, format, audioOnly, extractFrom, extractTo) *Downloader`
+- `Download(ctx, url) error` - Downloads video
+- `DownloadWithResult(ctx, url) (*DownloadResult, error)` - Downloads and returns metadata
+- `ExtractVideoID(input) string` - Extracts video ID from URL or returns as-is
+- `ResolveVideoURL(input) string` - Returns full YouTube URL
+- `CheckFFmpeg() error` - Verifies ffmpeg is installed
+- `Process(ctx, input, output, opts) error` - Runs ffmpeg processing
+
+**Download Flow:**
+1. Extract video ID from URL/input
+2. Check cache (`/tmp/youtube-manager-cache/<video_id>.<ext>`)
+3. If not cached → download full video to cache
+4. If post-processing needed (audio_only, extractFrom, extractTo) → run ffmpeg
+5. Otherwise → copy cached file to output directory
+
+#### 5. MCP Server (`internal/mcpserver`)
+
+**Purpose:** Exposes all operations as MCP tools over stdio transport.
+
+**Key Type:**
+- `Server` - Wraps MCP server with YouTube services
+
+**8 MCP Tools:**
+- `list_playlists` - List user's playlists
+- `get_playlist` - Get videos from a playlist
+- `create_playlist` - Create a new playlist
+- `delete_playlist` - Delete a playlist
+- `add_to_playlist` - Add video to playlist
+- `search_videos` - Search for videos
+- `get_video` - Get video details
+- `download_video` - Download video with options (audio_only, extract_from, extract_to)
+
+**Library:** `github.com/mark3labs/mcp-go` v0.44.0
+
+**API Notes (v0.44.0):**
+- Tool definition: `mcp.WithString()`, `mcp.WithNumber()`, `mcp.WithBoolean()` (no `WithInteger` or `Default`)
+- Property options: `mcp.Required()`, `mcp.Description()`, `mcp.Enum()`
+- Parameter extraction: `req.GetString()`, `req.GetInt()`, `req.GetBool()`, `req.RequireString()`, etc.
+- Results: `mcp.NewToolResultText()`, `mcp.NewToolResultError()`
 
 ### Dependencies
 
 - `github.com/spf13/cobra` - CLI framework
+- `github.com/kkdai/youtube/v2` - Native YouTube video downloads
+- `github.com/mark3labs/mcp-go` - MCP server framework
 - `golang.org/x/oauth2` - OAuth 2.0 authentication
 - `google.golang.org/api/youtube/v3` - YouTube Data API client
-- External: `yt-dlp` binary for video downloads
-
-## Go Standards Compliance
-
-### Followed ✅
-
-1. **No `/src` directory** - Code is in `cmd/` and `internal/`
-2. **No `init()` functions** - Explicit initialization in `main()`
-3. **Structured logging** - Using `slog` for all logging
-4. **Clear separation** - Domain logic separated from CLI
-5. **Proper error handling** - All errors wrapped with context using `%w`
-6. **Context as first parameter** - All service methods take `context.Context`
-7. **Documented exports** - All exported types and functions documented
-8. **No code duplication** - Shared logic extracted into services
-9. **One responsibility per function** - Each function has single purpose
-10. **Object-oriented design** - Using structs with methods for services
-
-### Code Organization
-
-- **Entry point** (`cmd/youtube-manager/main.go`): Minimal - only initialization and wiring
-- **Business logic** (`internal/`): All implementation details
-- **Packages by domain**: `auth`, `youtube`, `download`, `cli`
-- **No `pkg/`**: This is an application, not a library
+- External: `ffmpeg` binary for audio extraction and time-based cutting
 
 ## Common Tasks
 
-### Adding a New Command
+### Adding a New CLI Command
 
 1. Decide which CLI file it belongs to (`playlist.go`, `video.go`, or new file)
 2. Create `create*Cmd()` function returning `*cobra.Command`
@@ -142,70 +157,25 @@ youtube-manager/
 4. Register in appropriate `register*Commands()` function
 5. Add service methods to `internal/youtube` if needed
 
-Example:
-```go
-// In internal/cli/playlist.go
-func createMyCmd() *cobra.Command {
-    var myFlag string
+### Adding a New MCP Tool
 
-    cmd := &cobra.Command{
-        Use:   "my-command <arg>",
-        Short: "Description",
-        Args:  cobra.ExactArgs(1),
-        RunE: func(cmd *cobra.Command, args []string) error {
-            return runMyCommand(cmd.Context(), args[0], myFlag)
-        },
-    }
-
-    cmd.Flags().StringVar(&myFlag, "flag", "default", "Help text")
-    return cmd
-}
-
-func runMyCommand(ctx context.Context, arg, flag string) error {
-    // Implementation
-}
-
-// Register in registerPlaylistCommands()
-func registerPlaylistCommands() {
-    rootCmd.AddCommand(createListPlaylistsCmd())
-    // ... other commands ...
-    rootCmd.AddCommand(createMyCmd())  // Add here
-}
-```
-
-### Adding a New Service Method
-
-1. Add method to appropriate service (`PlaylistService` or `VideoService`)
-2. Return errors with context: `fmt.Errorf("operation failed: %w", err)`
-3. Add helper print function if needed
-4. Document the function
-
-### Modifying Authentication Scopes
-
-1. Update `scopes` variable in `internal/auth/auth.go`
-2. Delete cached token: `rm ~/.credentials/youtube-token.json`
-3. Re-authenticate on next run
-
-### OAuth Flow
-
-The authentication uses an automatic local web server flow:
-1. A local HTTP server starts on port 8000
-2. The browser opens automatically to Google's consent screen
-3. After authorization, Google redirects to `http://localhost:8000/oauth2callback`
-4. The server captures the authorization code automatically
-5. The token is exchanged and saved to `~/.credentials/youtube-token.json`
-6. The server shuts down automatically
-
-**Note:** Ensure `http://localhost:8000/oauth2callback` is configured as an authorized redirect URI in your Google Cloud Console OAuth credentials.
+1. Add handler method to `Server` in appropriate tools file
+2. Define tool with `mcp.NewTool()` in the register function
+3. Extract params with `req.RequireString()` / `req.GetInt()` etc.
+4. Return JSON via `json.MarshalIndent()` + `mcp.NewToolResultText()`
+5. Handle errors with `mcp.NewToolResultError()`
 
 ### Testing Changes
 
 ```bash
-# Build
-make build
+# Build both binaries
+make build && make build-mcp
 
-# Run
-./bin/youtube-manager <command> <args>
+# Run CLI
+./bin/youtube-manager-darwin-arm64 <command> <args>
+
+# Test MCP server
+echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | ./bin/youtube-manager-mcp-darwin-arm64
 
 # Format and check
 make check
@@ -214,23 +184,20 @@ make check
 ## Build and Installation
 
 ```bash
-# Build
+# Build CLI
 make build
 
-# Install to /usr/local/bin
+# Build MCP server
+make build-mcp
+
+# Install CLI to /usr/local/bin
 make install
 
-# Install to custom directory
-TARGET=/usr/bin make install
-
-# Uninstall
-make uninstall
+# Install MCP server to /usr/local/bin
+make install-mcp
 
 # Clean
 make clean
-
-# Download dependencies
-make deps
 
 # Run all checks (format, vet, test)
 make check
@@ -254,19 +221,24 @@ YouTube Data API v3 has daily quota limits:
    - `youtube.readonly` - View-only access
    - `youtube.force-ssl` - Required for write operations
 
+3. **MCP Server**
+   - Auth initialized before stdio transport starts
+   - All status messages to stderr (stdout reserved for JSON-RPC)
+
 ## Logging
 
 - Uses structured logging with `slog`
-- Default level: `Error` (user-facing CLI)
-- Logs to stderr
-- User output goes to stdout
+- CLI: `Error` level (user-facing)
+- MCP: `Info` level (diagnostic)
+- All logs to stderr
+- User/MCP output goes to stdout
 
 ## Error Handling
 
 - All errors wrapped with context using `%w`
 - Service layer returns detailed errors
 - CLI layer displays user-friendly messages
-- Logging for debugging information
+- MCP layer returns `mcp.NewToolResultError()` (never Go errors)
 
 ## Code Style
 
@@ -295,42 +267,9 @@ YouTube Data API v3 has daily quota limits:
 3. Implement configuration file support (`~/.youtube-manager/config.yaml`)
 4. Add retry logic for API failures with exponential backoff
 5. Add batch operations support
-6. Consider adding telemetry/metrics
-7. Add progress bars for downloads
-8. Support for multiple video downloads
-9. Playlist export/import functionality
-
-## Migration from Old Structure
-
-The codebase has been refactored from the old `src/` structure to follow Go standards:
-
-**Old Structure:**
-```
-src/
-├── main.go (683 bytes)
-├── cli.go (10,927 bytes - all commands)
-└── auth.go (2,855 bytes)
-```
-
-**New Structure:**
-```
-cmd/youtube-manager/main.go (minimal entry point)
-internal/
-├── auth/auth.go (authentication)
-├── cli/ (commands split by domain)
-├── youtube/ (business logic)
-└── download/ (download functionality)
-```
-
-**Key Changes:**
-- ✅ Removed `/src` directory
-- ✅ Removed all `init()` functions
-- ✅ Added structured logging with `slog`
-- ✅ Split large `cli.go` into domain-specific files
-- ✅ Extracted business logic into service packages
-- ✅ Added comprehensive documentation
-- ✅ Proper package structure with `cmd/` and `internal/`
-- ✅ Removed `fatih/color` dependency (using emojis for visual feedback)
+6. Add progress bars for downloads
+7. Support for multiple video downloads
+8. Playlist export/import functionality
 
 ## Exit Codes
 
