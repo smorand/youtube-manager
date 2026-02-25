@@ -19,6 +19,16 @@ go.work
 *.swo
 *~
 
+# Worktrees
+.worktrees/
+
+# Terraform
+init/.terraform/
+init/.terraform.lock.hcl
+init/terraform.tfstate*
+iac/.terraform/
+iac/.terraform.lock.hcl
+
 # OS
 .DS_Store
 Thumbs.db
