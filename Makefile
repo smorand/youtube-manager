@@ -1,4 +1,4 @@
-.PHONY: build build-all install uninstall clean clean-all rebuild test fmt vet check help
+.PHONY: build build-mcp build-all install install-mcp uninstall clean clean-all rebuild test fmt vet check help
 
 # Binary name derived from current directory
 BINARY_NAME=$(shell basename $$(pwd))
@@ -40,11 +40,19 @@ BINARY_DARWIN_ARM=$(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64
 CURRENT_BINARY=$(BUILD_DIR)/$(BINARY_NAME)-$(CURRENT_PLATFORM)
 LAUNCHER_SCRIPT=$(BUILD_DIR)/$(BINARY_NAME).sh
 
+# MCP server binary names
+MCP_NAME=$(BINARY_NAME)-mcp
+MCP_CMD_PATH=./cmd/$(MCP_NAME)
+CURRENT_MCP_BINARY=$(BUILD_DIR)/$(MCP_NAME)-$(CURRENT_PLATFORM)
+
 # Build for current platform only
 build: $(CURRENT_BINARY)
 
 # Build for all platforms and create launcher script
 build-all: $(BINARY_LINUX) $(BINARY_DARWIN_INTEL) $(BINARY_DARWIN_ARM) $(LAUNCHER_SCRIPT)
+
+# Build MCP server for current platform
+build-mcp: $(CURRENT_MCP_BINARY)
 
 rebuild: clean-all build
 
@@ -132,6 +140,13 @@ $(LAUNCHER_SCRIPT): $(BINARY_LINUX) $(BINARY_DARWIN_INTEL) $(BINARY_DARWIN_ARM)
 	@chmod +x $(LAUNCHER_SCRIPT)
 	@echo "✓ Created launcher script: $(LAUNCHER_SCRIPT)"
 
+# Build MCP server binary
+$(CURRENT_MCP_BINARY): $(GO_SUM_PATH)
+	@echo "Building $(MCP_NAME) for $(CURRENT_PLATFORM)..."
+	@mkdir -p $(BUILD_DIR)
+	@go build -o $(CURRENT_MCP_BINARY) $(MCP_CMD_PATH)
+	@echo "✓ Built: $(CURRENT_MCP_BINARY)"
+
 # Generate go.sum
 $(GO_SUM_PATH): $(GO_MOD_PATH)
 	@echo "Downloading dependencies..."
@@ -195,6 +210,30 @@ else
 	@echo "Installing launcher script to $(TARGET)/$(BINARY_NAME)..."
 	@cp $(LAUNCHER_SCRIPT) $(TARGET)/$(BINARY_NAME) 2>/dev/null || sudo cp $(LAUNCHER_SCRIPT) $(TARGET)/$(BINARY_NAME)
 	@echo "Note: Platform binaries remain in $(BUILD_DIR)/"
+	@echo "Installation complete!"
+endif
+
+# Install MCP server binary
+install-mcp: build-mcp
+	@if [ ! -f "$(CURRENT_MCP_BINARY)" ]; then \
+		echo "Error: MCP binary for current platform ($(CURRENT_PLATFORM)) not found"; \
+		exit 1; \
+	fi
+ifndef TARGET
+	@echo "Installing $(MCP_NAME) ($(CURRENT_PLATFORM)) to /usr/local/bin..."
+	@sudo cp $(CURRENT_MCP_BINARY) /usr/local/bin/$(MCP_NAME)
+ifeq ($(GOOS),darwin)
+	@echo "Signing binary for macOS..."
+	@sudo codesign --force --sign - /usr/local/bin/$(MCP_NAME)
+endif
+	@echo "Installation complete!"
+else
+	@echo "Installing $(MCP_NAME) ($(CURRENT_PLATFORM)) to $(TARGET)..."
+	@cp $(CURRENT_MCP_BINARY) $(TARGET)/$(MCP_NAME) 2>/dev/null || sudo cp $(CURRENT_MCP_BINARY) $(TARGET)/$(MCP_NAME)
+ifeq ($(GOOS),darwin)
+	@echo "Signing binary for macOS..."
+	@codesign --force --sign - $(TARGET)/$(MCP_NAME) 2>/dev/null || sudo codesign --force --sign - $(TARGET)/$(MCP_NAME)
+endif
 	@echo "Installation complete!"
 endif
 
@@ -277,10 +316,12 @@ info:
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  build           - Build the binary for current platform ($(CURRENT_PLATFORM))"
+	@echo "  build           - Build the CLI binary for current platform ($(CURRENT_PLATFORM))"
+	@echo "  build-mcp       - Build the MCP server binary for current platform"
 	@echo "  build-all       - Build for all platforms and create launcher script"
 	@echo "  rebuild         - Clean all and rebuild from scratch"
 	@echo "  install         - Install current platform binary to /usr/local/bin (or TARGET)"
+	@echo "  install-mcp     - Install MCP server binary to /usr/local/bin (or TARGET)"
 	@echo "  install-launcher - Install launcher script with all platform binaries"
 	@echo "  uninstall       - Remove installed binary"
 	@echo "  clean           - Remove build artifacts"

@@ -1,6 +1,6 @@
 # YouTube Manager
 
-A command-line tool for managing YouTube content using YouTube Data API v3 and yt-dlp.
+A command-line tool and MCP server for managing YouTube content using YouTube Data API v3.
 
 ## Features
 
@@ -14,14 +14,23 @@ A command-line tool for managing YouTube content using YouTube Data API v3 and y
 - **Video Operations**
   - Search for videos
   - Get detailed video information
-  - Download videos using yt-dlp (supports audio-only and custom formats)
+  - Download videos with cache and post-processing
+
+- **Download Enhancements**
+  - `/tmp` cache to avoid re-downloading the same video (24h expiration)
+  - Audio extraction to MP3 (192kbps via ffmpeg)
+  - Time-based extraction (`--extract-from` / `--extract-to` in seconds)
+
+- **MCP Server**
+  - All 8 operations exposed as MCP tools over stdio transport
+  - For AI assistant integration (Claude Code, etc.)
 
 ## Prerequisites
 
 1. **Go 1.21 or later** - Install from [golang.org](https://golang.org/)
-2. **yt-dlp** (optional, for downloading videos)
-   - macOS: `brew install yt-dlp`
-   - Other platforms: `pip install yt-dlp`
+2. **ffmpeg** (for audio extraction and time-based cutting)
+   - macOS: `brew install ffmpeg`
+   - Other: see [ffmpeg.org](https://ffmpeg.org/)
 
 ## Setup
 
@@ -38,14 +47,17 @@ A command-line tool for managing YouTube content using YouTube Data API v3 and y
 ### 2. Build and Install
 
 ```bash
-# Build the binary
+# Build the CLI binary
 make build
 
-# Install to /usr/local/bin
+# Build the MCP server binary
+make build-mcp
+
+# Install CLI to /usr/local/bin
 make install
 
-# Or install to a custom location
-TARGET=/path/to/bin make install
+# Install MCP server to /usr/local/bin
+make install-mcp
 ```
 
 ## Usage
@@ -60,7 +72,7 @@ On first use, the tool will:
 
 No manual copy/paste of authorization codes is required.
 
-### Commands
+### CLI Commands
 
 #### List Playlists
 ```bash
@@ -90,12 +102,20 @@ youtube-manager download <video-url>
 # Download to specific directory
 youtube-manager download <video-url> --output ~/Downloads
 
-# Download audio only (MP3)
+# Download audio only (converts to MP3 via ffmpeg)
 youtube-manager download <video-url> --audio-only
 
-# Custom format
-youtube-manager download <video-url> --format "bestvideo[height<=720]+bestaudio/best"
+# Extract first 60 seconds
+youtube-manager download <video-url> --extract-to 60
+
+# Extract audio from 10s to 60s as MP3
+youtube-manager download <video-url> --audio-only --extract-from 10 --extract-to 60
+
+# Custom video quality
+youtube-manager download <video-url> --format 720p
 ```
+
+Downloads are cached in `/tmp/youtube-manager-cache/` for 24 hours. Repeated downloads of the same video will use the cache.
 
 #### Create Playlist
 ```bash
@@ -114,11 +134,39 @@ youtube-manager delete-playlist <playlist-id>
 youtube-manager add-to-playlist <playlist-id> <video-id>
 ```
 
+### MCP Server
+
+The MCP server exposes all operations as tools over stdio transport for AI assistant integration.
+
+#### Register with Claude Code
+```bash
+claude mcp add youtube-manager ./bin/youtube-manager-mcp-darwin-arm64
+```
+
+#### Available MCP Tools
+
+| Tool | Description | Required Params |
+|------|-------------|-----------------|
+| `list_playlists` | List your YouTube playlists | - |
+| `get_playlist` | Get videos from a playlist | `playlist_id` |
+| `create_playlist` | Create a new playlist | `title` |
+| `delete_playlist` | Delete a playlist | `playlist_id` |
+| `add_to_playlist` | Add a video to a playlist | `playlist_id`, `video_id` |
+| `search_videos` | Search for videos | `query` |
+| `get_video` | Get video details | `video_id` |
+| `download_video` | Download a video | `url_or_video_id` |
+
+#### Test MCP Server
+```bash
+echo '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}},"id":1}' | ./bin/youtube-manager-mcp-darwin-arm64
+```
+
 ## Development
 
 ### Build
 ```bash
-make build
+make build       # CLI binary
+make build-mcp   # MCP server binary
 ```
 
 ### Run Tests
@@ -138,12 +186,7 @@ make check  # runs fmt, vet, and test
 
 ### Clean Build Artifacts
 ```bash
-make clean      # removes binary only
-```
-
-### Update Dependencies
-```bash
-make deps       # downloads and tidies dependencies
+make clean      # removes binaries only
 ```
 
 ## Project Structure
@@ -156,15 +199,17 @@ youtube-manager/
 ├── go.mod                    # Go module definition
 ├── go.sum                    # Dependency checksums
 ├── cmd/                      # Main applications
-│   └── youtube-manager/      # Entry point
+│   ├── youtube-manager/      # CLI entry point
+│   │   └── main.go
+│   └── youtube-manager-mcp/  # MCP server entry point
 │       └── main.go
 ├── internal/                 # Private application code
 │   ├── auth/                 # OAuth 2.0 authentication
 │   ├── cli/                  # CLI command implementations
-│   ├── download/             # Video download functionality
+│   ├── download/             # Video download (cache, ffmpeg, downloader)
+│   ├── mcpserver/            # MCP tool handlers
 │   └── youtube/              # YouTube API services
 └── bin/                      # Compiled binaries
-    └── youtube-manager
 ```
 
 ## OAuth Scopes
@@ -178,10 +223,10 @@ The tool requests the following YouTube API scopes:
 ### "Credentials file not found"
 Ensure you've placed your OAuth credentials at `~/.credentials/scm-pwd-web.json`
 
-### "yt-dlp not found"
-Install yt-dlp using:
-- macOS: `brew install yt-dlp`
-- Other: `pip install yt-dlp`
+### "ffmpeg not found"
+Install ffmpeg:
+- macOS: `brew install ffmpeg`
+- Other: see [ffmpeg.org](https://ffmpeg.org/)
 
 ### Authentication errors
 Delete the token file and re-authenticate:

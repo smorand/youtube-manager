@@ -148,8 +148,8 @@ func (c *Client) getTokenFromWeb(config *oauth2.Config) (*oauth2.Token, error) {
 
 	// Generate the auth URL and open it in the browser
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
-	fmt.Printf("Opening browser for authorization...\n")
-	fmt.Printf("If the browser doesn't open automatically, visit:\n%s\n\n", authURL)
+	fmt.Fprintf(os.Stderr, "Opening browser for authorization...\n")
+	fmt.Fprintf(os.Stderr, "If the browser doesn't open automatically, visit:\n%s\n\n", authURL)
 
 	if err := openBrowser(authURL); err != nil {
 		slog.Warn("Failed to open browser automatically", "error", err)
@@ -177,7 +177,7 @@ func (c *Client) getTokenFromWeb(config *oauth2.Config) (*oauth2.Token, error) {
 		return nil, fmt.Errorf("unable to exchange authorization code: %w", err)
 	}
 
-	fmt.Println("Authorization successful!")
+	fmt.Fprintln(os.Stderr, "Authorization successful!")
 	return token, nil
 }
 
