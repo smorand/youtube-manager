@@ -1,4 +1,7 @@
 // Package auth handles YouTube API authentication using OAuth 2.0.
+// Supports two modes:
+//   - CLI mode: file-based credentials and browser-based OAuth flow
+//   - MCP server mode: context-injected tokens from OAuth 2.1 authorization server
 package auth
 
 import (
@@ -20,15 +23,96 @@ import (
 )
 
 const (
-	credentialsFile = "scm-pwd-web.json"
-	tokenFile       = "youtube-token.json"
-	callbackPort    = 8000
-	callbackPath    = "/oauth2callback"
+	// CredentialsFile is the name of the OAuth credentials file.
+	CredentialsFile = "scm-pwd-web.json"
+	// TokenFile is the name of the token file.
+	TokenFile    = "youtube-token.json"
+	callbackPort = 8000
+	callbackPath = "/oauth2callback"
 )
 
-var scopes = []string{
+// Scopes defines the OAuth2 scopes required for YouTube API access.
+var Scopes = []string{
 	youtube.YoutubeReadonlyScope,
 	youtube.YoutubeForceSslScope,
+}
+
+// contextKey is a type for context keys used in this package.
+type contextKey string
+
+// Context keys for storing authentication data.
+const (
+	oauthConfigKey contextKey = "oauth_config"
+	accessTokenKey contextKey = "access_token"
+)
+
+// WithOAuthConfig returns a new context with the OAuth2 configuration stored.
+// Used by the MCP server to pass the OAuth config loaded from Secret Manager.
+func WithOAuthConfig(ctx context.Context, config *oauth2.Config) context.Context {
+	return context.WithValue(ctx, oauthConfigKey, config)
+}
+
+// GetOAuthConfigFromContext retrieves the OAuth2 config from context, if present.
+func GetOAuthConfigFromContext(ctx context.Context) (*oauth2.Config, bool) {
+	config, ok := ctx.Value(oauthConfigKey).(*oauth2.Config)
+	return config, ok
+}
+
+// WithAccessToken returns a new context with the OAuth2 token stored.
+// Used by the MCP server to pass the validated access token.
+func WithAccessToken(ctx context.Context, token *oauth2.Token) context.Context {
+	return context.WithValue(ctx, accessTokenKey, token)
+}
+
+// GetAccessTokenFromContext retrieves the OAuth2 token from context, if present.
+func GetAccessTokenFromContext(ctx context.Context) (*oauth2.Token, bool) {
+	token, ok := ctx.Value(accessTokenKey).(*oauth2.Token)
+	return token, ok
+}
+
+// GetCredentialsPath returns the path to the credentials directory.
+func GetCredentialsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".credentials")
+}
+
+// GetHTTPClient returns an authenticated HTTP client.
+// Authentication sources are checked in order:
+//  1. OAuth config + access token from context (MCP server mode)
+//  2. Local credentials file + local token file (CLI mode)
+func GetHTTPClient(ctx context.Context) (*http.Client, error) {
+	// Check if OAuth config and access token are provided via context (MCP server mode)
+	if ctxConfig, ok := GetOAuthConfigFromContext(ctx); ok && ctxConfig != nil {
+		if token, ok := GetAccessTokenFromContext(ctx); ok && token != nil {
+			return ctxConfig.Client(ctx, token), nil
+		}
+	}
+
+	// Fall back to file-based auth (CLI mode)
+	client := &Client{}
+	if err := client.resolveCredentialPaths(); err != nil {
+		return nil, err
+	}
+	return client.getHTTPClient(ctx)
+}
+
+// GetYouTubeService returns an authenticated YouTube service.
+// Uses context-injected tokens (MCP server mode) or file-based auth (CLI mode).
+func GetYouTubeService(ctx context.Context) (*youtube.Service, error) {
+	httpClient, err := GetHTTPClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	service, err := youtube.NewService(ctx, option.WithHTTPClient(httpClient))
+	if err != nil {
+		return nil, fmt.Errorf("unable to create YouTube service: %w", err)
+	}
+
+	return service, nil
 }
 
 // Client manages YouTube API authentication and provides authenticated clients.
@@ -37,21 +121,47 @@ type Client struct {
 	tokenPath       string
 }
 
-// NewClient creates a new auth client with default credentials paths.
+// NewClient creates a new auth client with configurable credentials paths.
+// File paths are resolved in order:
+//  1. OAUTH_CREDENTIALS_FILE / YOUTUBE_TOKEN_FILE env vars (exact file paths)
+//  2. CREDENTIALS_DIR env var (directory containing both files)
+//  3. ~/.credentials/ (default)
 func NewClient() (*Client, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get user home directory: %w", err)
+	c := &Client{}
+	if err := c.resolveCredentialPaths(); err != nil {
+		return nil, err
 	}
-
-	credDir := filepath.Join(home, ".credentials")
-	return &Client{
-		credentialsPath: filepath.Join(credDir, credentialsFile),
-		tokenPath:       filepath.Join(credDir, tokenFile),
-	}, nil
+	return c, nil
 }
 
-// GetYouTubeService returns an authenticated YouTube service.
+// resolveCredentialPaths sets the credential file paths from env vars or defaults.
+func (c *Client) resolveCredentialPaths() error {
+	credPath := os.Getenv("OAUTH_CREDENTIALS_FILE")
+	tokenPath := os.Getenv("YOUTUBE_TOKEN_FILE")
+
+	if credPath == "" || tokenPath == "" {
+		credDir := os.Getenv("CREDENTIALS_DIR")
+		if credDir == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("failed to get user home directory: %w", err)
+			}
+			credDir = filepath.Join(home, ".credentials")
+		}
+		if credPath == "" {
+			credPath = filepath.Join(credDir, CredentialsFile)
+		}
+		if tokenPath == "" {
+			tokenPath = filepath.Join(credDir, TokenFile)
+		}
+	}
+
+	c.credentialsPath = credPath
+	c.tokenPath = tokenPath
+	return nil
+}
+
+// GetYouTubeService returns an authenticated YouTube service using file-based auth.
 func (c *Client) GetYouTubeService(ctx context.Context) (*youtube.Service, error) {
 	httpClient, err := c.getHTTPClient(ctx)
 	if err != nil {
@@ -66,14 +176,14 @@ func (c *Client) GetYouTubeService(ctx context.Context) (*youtube.Service, error
 	return service, nil
 }
 
-// getHTTPClient returns an authenticated HTTP client.
+// getHTTPClient returns an authenticated HTTP client using file-based credentials.
 func (c *Client) getHTTPClient(ctx context.Context) (*http.Client, error) {
 	credentials, err := os.ReadFile(c.credentialsPath)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read credentials file %s: %w\nSee README.md for setup instructions", c.credentialsPath, err)
 	}
 
-	config, err := google.ConfigFromJSON(credentials, scopes...)
+	config, err := google.ConfigFromJSON(credentials, Scopes...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse credentials: %w", err)
 	}

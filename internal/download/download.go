@@ -1,15 +1,18 @@
-// Package download handles native YouTube video downloads.
+// Package download handles YouTube video downloads using yt-dlp.
 package download
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
-	"github.com/kkdai/youtube/v2"
+	secretmanager "cloud.google.com/go/secretmanager/apiv1"
+	secretmanagerpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 )
 
 // DownloadResult contains metadata about a completed download.
@@ -21,6 +24,13 @@ type DownloadResult struct {
 	Format   string `json:"format"`
 	FileSize int64  `json:"file_size"`
 	Cached   bool   `json:"cached"`
+}
+
+// ytdlpInfo holds metadata extracted from yt-dlp --dump-json.
+type ytdlpInfo struct {
+	Title    string  `json:"title"`
+	Uploader string  `json:"uploader"`
+	Duration float64 `json:"duration"`
 }
 
 // Downloader handles video downloads.
@@ -51,6 +61,15 @@ func ResolveVideoURL(input string) string {
 	return "https://www.youtube.com/watch?v=" + input
 }
 
+// CheckYtdlp verifies that yt-dlp is installed and accessible.
+func CheckYtdlp() error {
+	_, err := exec.LookPath("yt-dlp")
+	if err != nil {
+		return fmt.Errorf("yt-dlp not found in PATH: install it with 'brew install yt-dlp' or visit https://github.com/yt-dlp/yt-dlp")
+	}
+	return nil
+}
+
 // Download downloads a video from the given URL.
 func (d *Downloader) Download(ctx context.Context, url string) error {
 	_, err := d.DownloadWithResult(ctx, url)
@@ -59,6 +78,10 @@ func (d *Downloader) Download(ctx context.Context, url string) error {
 
 // DownloadWithResult downloads a video and returns metadata about the result.
 func (d *Downloader) DownloadWithResult(ctx context.Context, url string) (*DownloadResult, error) {
+	if err := CheckYtdlp(); err != nil {
+		return nil, err
+	}
+
 	cache := NewCache()
 	if err := cache.EnsureDir(); err != nil {
 		return nil, fmt.Errorf("failed to create cache directory: %w", err)
@@ -66,24 +89,22 @@ func (d *Downloader) DownloadWithResult(ctx context.Context, url string) (*Downl
 	cache.CleanExpired()
 
 	videoID := ExtractVideoID(url)
-	client := &youtube.Client{}
 
+	// Fetch video info
 	fmt.Fprintf(os.Stderr, "Fetching video info: %s\n", url)
-
-	video, err := client.GetVideoContext(ctx, url)
+	info, err := d.getVideoInfo(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get video info: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Title:    %s\n", video.Title)
-	fmt.Fprintf(os.Stderr, "Author:   %s\n", video.Author)
-	fmt.Fprintf(os.Stderr, "Duration: %s\n", video.Duration)
+	fmt.Fprintf(os.Stderr, "Title:    %s\n", info.Title)
+	fmt.Fprintf(os.Stderr, "Author:   %s\n", info.Uploader)
+	fmt.Fprintf(os.Stderr, "Duration: %s\n", formatDuration(info.Duration))
 
 	// Check cache
 	cachedPath, cached := cache.GetCachedPath(videoID)
 	if !cached {
-		// Download to cache
-		cachedPath, err = d.downloadToCache(ctx, client, video, cache, videoID)
+		cachedPath, err = d.downloadToCache(ctx, url, videoID, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -98,13 +119,12 @@ func (d *Downloader) DownloadWithResult(ctx context.Context, url string) (*Downl
 		ExtractTo:   d.extractTo,
 	}
 
-	outputPath, err := d.buildOutputPath(video.Title, cachedPath, opts)
+	outputPath, err := d.buildOutputPath(info.Title, cachedPath, opts)
 	if err != nil {
 		return nil, err
 	}
 
 	if opts.NeedsProcessing() {
-		// Check ffmpeg availability
 		if err := CheckFFmpeg(); err != nil {
 			return nil, err
 		}
@@ -114,101 +134,158 @@ func (d *Downloader) DownloadWithResult(ctx context.Context, url string) (*Downl
 			return nil, fmt.Errorf("post-processing failed: %w", err)
 		}
 	} else {
-		// Copy cached file to output
 		fmt.Fprintf(os.Stderr, "Copying to output...\n")
 		if err := copyFile(cachedPath, outputPath); err != nil {
 			return nil, fmt.Errorf("failed to copy cached file: %w", err)
 		}
 	}
 
-	info, err := os.Stat(outputPath)
+	fileInfo, err := os.Stat(outputPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat output file: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Output:   %s (%s)\n", outputPath, formatBytes(info.Size()))
+	fmt.Fprintf(os.Stderr, "Output:   %s (%s)\n", outputPath, formatBytes(fileInfo.Size()))
 
 	return &DownloadResult{
 		FilePath: outputPath,
-		Title:    video.Title,
-		Author:   video.Author,
-		Duration: video.Duration.String(),
+		Title:    info.Title,
+		Author:   info.Uploader,
+		Duration: formatDuration(info.Duration),
 		Format:   d.outputFormat(opts),
-		FileSize: info.Size(),
+		FileSize: fileInfo.Size(),
 		Cached:   cached,
 	}, nil
 }
 
-// downloadToCache downloads the full video to the cache directory.
-func (d *Downloader) downloadToCache(ctx context.Context, client *youtube.Client, video *youtube.Video, cache *Cache, videoID string) (string, error) {
-	// Always download best quality with audio for cache
-	format, ext := d.selectCacheFormat(video)
-	if format == nil {
-		return "", fmt.Errorf("no suitable format found")
-	}
+// cookiesPath caches the path to the cookies file written from Secret Manager.
+var (
+	cookiesOnce sync.Once
+	cookiesFile string
+)
 
-	cachedPath := cache.CachePath(videoID, ext)
+// ensureCookiesFile loads YouTube cookies from Secret Manager and writes them
+// to a temp file. Returns the path or empty string if unavailable.
+func ensureCookiesFile() string {
+	cookiesOnce.Do(func() {
+		project := os.Getenv("SECRET_PROJECT")
+		if project == "" {
+			return
+		}
+		name := fmt.Sprintf("projects/%s/secrets/scm-pwd-ytm-youtube-cookies/versions/latest", project)
 
-	fmt.Fprintf(os.Stderr, "Format:   %s (%s)\n", format.QualityLabel, format.MimeType)
-	fmt.Fprintf(os.Stderr, "Downloading to cache...\n")
+		ctx := context.Background()
+		client, err := secretmanager.NewClient(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create secret manager client: %v\n", err)
+			return
+		}
+		defer client.Close()
 
-	stream, size, err := client.GetStreamContext(ctx, video, format)
-	if err != nil {
-		return "", fmt.Errorf("failed to get stream: %w", err)
-	}
-	defer stream.Close()
+		resp, err := client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: name})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load cookies secret: %v\n", err)
+			return
+		}
 
-	file, err := os.Create(cachedPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to create cache file: %w", err)
-	}
-	defer file.Close()
-
-	if size > 0 {
-		fmt.Fprintf(os.Stderr, "Downloading... (%s)\n", formatBytes(size))
-	}
-
-	written, err := io.Copy(file, stream)
-	if err != nil {
-		os.Remove(cachedPath)
-		return "", fmt.Errorf("download failed: %w", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Downloaded: %s\n", formatBytes(written))
-	return cachedPath, nil
+		f, err := os.CreateTemp("", "yt-cookies-*.txt")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create cookies temp file: %v\n", err)
+			return
+		}
+		if _, err := f.Write(resp.Payload.Data); err != nil {
+			f.Close()
+			return
+		}
+		f.Close()
+		cookiesFile = f.Name()
+		fmt.Fprintf(os.Stderr, "Loaded YouTube cookies from Secret Manager\n")
+	})
+	return cookiesFile
 }
 
-// selectCacheFormat picks the best format with audio for caching.
-func (d *Downloader) selectCacheFormat(video *youtube.Video) (*youtube.Format, string) {
-	formats := video.Formats
+// envArgs returns yt-dlp arguments based on the runtime environment.
+// Local: uses browser cookies. Cloud Run: uses nodejs runtime + Secret Manager cookies.
+func envArgs() []string {
+	if os.Getenv("BASE_URL") != "" {
+		args := []string{"--js-runtimes", "node", "--remote-components", "ejs:github"}
+		if path := ensureCookiesFile(); path != "" {
+			args = append(args, "--cookies", path)
+		}
+		return args
+	}
+	return []string{"--cookies-from-browser", "chrome"}
+}
 
-	// Prefer formats with both video and audio
-	combined := formats.Select(func(f youtube.Format) bool {
-		return f.AudioChannels > 0 && f.QualityLabel != ""
-	})
+// getVideoInfo fetches video metadata via yt-dlp --dump-json.
+func (d *Downloader) getVideoInfo(ctx context.Context, url string) (*ytdlpInfo, error) {
+	args := []string{
+		"--dump-json",
+		"--no-download",
+	}
+	args = append(args, envArgs()...)
+	args = append(args, url)
 
-	if len(combined) > 0 {
-		combined.Sort()
-		f := &combined[0]
-		return f, extensionFromMime(f.MimeType, "mp4")
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("yt-dlp info failed: %w: %s", err, stderr.String())
 	}
 
-	// Fallback: any format with audio
-	withAudio := formats.WithAudioChannels()
-	if len(withAudio) > 0 {
-		withAudio.Sort()
-		f := &withAudio[0]
-		return f, extensionFromMime(f.MimeType, "mp4")
+	var info ytdlpInfo
+	if err := json.Unmarshal(out, &info); err != nil {
+		return nil, fmt.Errorf("failed to parse yt-dlp output: %w", err)
 	}
 
-	return nil, ""
+	return &info, nil
+}
+
+// downloadToCache downloads the video to the cache directory via yt-dlp.
+func (d *Downloader) downloadToCache(ctx context.Context, url, videoID string, cache *Cache) (string, error) {
+	// Output template: cache dir + videoID.%(ext)s
+	outputTemplate := filepath.Join(cache.dir, videoID+".%(ext)s")
+
+	args := []string{}
+	args = append(args, envArgs()...)
+	args = append(args,
+		"--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+		"--merge-output-format", "mp4",
+		"--output", outputTemplate,
+		"--no-playlist",
+		url,
+	)
+
+	fmt.Fprintf(os.Stderr, "Downloading to cache...\n")
+
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("yt-dlp download failed: %w: %s", err, stderr.String())
+	}
+	fmt.Fprint(os.Stderr, stderr.String())
+
+	// Find the downloaded file
+	cachedPath, found := cache.GetCachedPath(videoID)
+	if !found {
+		return "", fmt.Errorf("download completed but cached file not found for %s", videoID)
+	}
+
+	info, _ := os.Stat(cachedPath)
+	if info != nil {
+		fmt.Fprintf(os.Stderr, "Downloaded: %s\n", formatBytes(info.Size()))
+	}
+
+	return cachedPath, nil
 }
 
 // buildOutputPath constructs the output file path based on title, options, and format.
 func (d *Downloader) buildOutputPath(title, cachedPath string, opts ProcessOpts) (string, error) {
 	base := sanitizeFilename(title)
 
-	// Add time range suffix
 	if opts.ExtractFrom > 0 || opts.ExtractTo > 0 {
 		suffix := ""
 		if opts.ExtractFrom > 0 {
@@ -220,7 +297,6 @@ func (d *Downloader) buildOutputPath(title, cachedPath string, opts ProcessOpts)
 		base += suffix
 	}
 
-	// Determine extension
 	ext := filepath.Ext(cachedPath)
 	if opts.AudioOnly {
 		ext = ".mp3"
@@ -240,39 +316,11 @@ func (d *Downloader) outputFormat(opts ProcessOpts) string {
 
 // copyFile copies a file from src to dst.
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return err
-	}
-
-	return out.Close()
-}
-
-// extensionFromMime extracts a file extension from a MIME type.
-func extensionFromMime(mimeType, fallback string) string {
-	switch {
-	case strings.Contains(mimeType, "mp4"):
-		return "mp4"
-	case strings.Contains(mimeType, "webm"):
-		return "webm"
-	case strings.Contains(mimeType, "mp4a"), strings.Contains(mimeType, "m4a"):
-		return "m4a"
-	case strings.Contains(mimeType, "opus"):
-		return "webm"
-	default:
-		return fallback
-	}
+	return os.WriteFile(dst, data, 0644)
 }
 
 // sanitizeFilename removes characters that are not safe for filenames.
@@ -308,4 +356,17 @@ func formatBytes(bytes int64) string {
 	default:
 		return fmt.Sprintf("%d B", bytes)
 	}
+}
+
+// formatDuration formats seconds into a human-readable duration string.
+func formatDuration(seconds float64) string {
+	total := int(seconds)
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+
+	if h > 0 {
+		return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
+	}
+	return fmt.Sprintf("%dm%02ds", m, s)
 }
