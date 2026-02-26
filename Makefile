@@ -46,6 +46,11 @@ MCP_NAME=$(BINARY_NAME)-mcp
 MCP_CMD_PATH=./cmd/$(MCP_NAME)
 CURRENT_MCP_BINARY=$(BUILD_DIR)/$(MCP_NAME)-$(CURRENT_PLATFORM)
 
+# Update-cookies tool
+COOKIES_NAME=update-cookies
+COOKIES_CMD_PATH=./cmd/$(COOKIES_NAME)
+CURRENT_COOKIES_BINARY=$(BUILD_DIR)/$(COOKIES_NAME)-$(CURRENT_PLATFORM)
+
 # Build for current platform only
 build: $(CURRENT_BINARY)
 
@@ -147,6 +152,19 @@ $(CURRENT_MCP_BINARY): $(GO_SUM_PATH)
 	@mkdir -p $(BUILD_DIR)
 	@go build -o $(CURRENT_MCP_BINARY) $(MCP_CMD_PATH)
 	@echo "✓ Built: $(CURRENT_MCP_BINARY)"
+
+# Build update-cookies tool
+build-cookies: $(CURRENT_COOKIES_BINARY)
+
+$(CURRENT_COOKIES_BINARY): $(GO_SUM_PATH)
+	@echo "Building $(COOKIES_NAME) for $(CURRENT_PLATFORM)..."
+	@mkdir -p $(BUILD_DIR)
+	@go build -o $(CURRENT_COOKIES_BINARY) $(COOKIES_CMD_PATH)
+	@echo "✓ Built: $(CURRENT_COOKIES_BINARY)"
+
+# Update cookies: build and run the tool
+update-cookies: build-cookies
+	@$(CURRENT_COOKIES_BINARY)
 
 # Generate go.sum
 $(GO_SUM_PATH): $(GO_MOD_PATH)
