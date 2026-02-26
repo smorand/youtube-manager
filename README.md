@@ -190,6 +190,49 @@ make plan
 make deploy
 ```
 
+### YouTube Cookies (yt-dlp Authentication)
+
+Cloud Run uses yt-dlp for downloads, which requires YouTube cookies for authenticated access. Cookies are stored in Secret Manager (`scm-pwd-ytm-youtube-cookies`) and must be refreshed regularly since they expire.
+
+#### Manual Refresh
+
+```bash
+# Build the tool
+make build-cookies
+
+# Dry run (preview without uploading)
+./bin/update-cookies-darwin-arm64 --dry-run
+
+# Upload fresh cookies
+make update-cookies
+```
+
+The tool exports cookies from your local Chrome browser via yt-dlp, filters to YouTube/Google domains only, and uploads them to Secret Manager.
+
+#### Automatic Refresh (macOS LaunchAgent)
+
+A LaunchAgent runs every hour to keep cookies fresh:
+
+```
+~/Library/LaunchAgents/com.smorand.update-youtube-cookies.plist
+```
+
+Manage it with:
+```bash
+# Check status
+launchctl list | grep smorand
+
+# Stop
+launchctl unload ~/Library/LaunchAgents/com.smorand.update-youtube-cookies.plist
+
+# Start
+launchctl load ~/Library/LaunchAgents/com.smorand.update-youtube-cookies.plist
+```
+
+Log output: `/tmp/update-cookies-launchd.log`
+
+> **Note:** A LaunchAgent is used instead of cron because cron processes on macOS cannot access the Keychain, which is required to decrypt Chrome cookies.
+
 ### Updating
 
 After code changes, redeploy with:
@@ -250,7 +293,9 @@ youtube-manager/
 ├── cmd/                      # Main applications
 │   ├── youtube-manager/      # CLI entry point
 │   │   └── main.go
-│   └── youtube-manager-mcp/  # MCP server entry point
+│   ├── youtube-manager-mcp/  # MCP server entry point
+│   │   └── main.go
+│   └── update-cookies/       # Cookie refresh tool
 │       └── main.go
 ├── internal/                 # Private application code
 │   ├── auth/                 # OAuth 2.0 authentication

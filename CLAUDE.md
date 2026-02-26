@@ -23,8 +23,10 @@ youtube-manager/
 ├── cmd/                      # Main applications
 │   ├── youtube-manager/      # CLI entry point
 │   │   └── main.go           # Minimal - only initialization
-│   └── youtube-manager-mcp/  # MCP server entry point
-│       └── main.go           # Auth init + stdio transport
+│   ├── youtube-manager-mcp/  # MCP server entry point
+│   │   └── main.go           # Auth init + stdio transport
+│   └── update-cookies/       # Cookie refresh tool for Secret Manager
+│       └── main.go           # Export browser cookies → filter → upload
 ├── internal/                 # Private application code
 │   ├── auth/                 # OAuth 2.0 authentication
 │   │   └── auth.go           # Auth client and token management
@@ -47,7 +49,8 @@ youtube-manager/
 │       └── video.go          # Video operations
 ├── bin/                      # Compiled binaries (git-ignored)
 │   ├── youtube-manager-*     # CLI binaries
-│   └── youtube-manager-mcp-* # MCP server binaries
+│   ├── youtube-manager-mcp-* # MCP server binaries
+│   └── update-cookies-*      # Cookie refresh tool binaries
 └── .gitignore                # Git ignore rules
 ```
 
@@ -112,6 +115,26 @@ youtube-manager/
 3. If not cached → download full video to cache
 4. If post-processing needed (audio_only, extractFrom, extractTo) → run ffmpeg
 5. Otherwise → copy cached file to output directory
+
+**Cloud Run Download Flow:**
+- Uses yt-dlp with `--js-runtimes node --remote-components ejs:github`
+- Loads YouTube cookies from Secret Manager (`scm-pwd-ytm-youtube-cookies`)
+- Downloads to temp dir, uploads to GCS bucket (`scmytm-downloads-prd`)
+- Returns a signed URL (10min expiry) in the MCP response
+- GCS bucket has 1-day lifecycle auto-cleanup
+
+#### 6. Cookie Refresh (`cmd/update-cookies`)
+
+**Purpose:** Export browser cookies and upload to Secret Manager for Cloud Run yt-dlp.
+
+**Flow:**
+1. Export all cookies from Chrome via `yt-dlp --cookies-from-browser`
+2. Filter to YouTube/Google domains (`.youtube.com`, `.google.com`, `.googleapis.com`, `.googlevideo.com`)
+3. Upload filtered cookies as new Secret Manager version
+
+**Flags:** `--browser` (default: chrome), `--file` (existing cookie file), `--project`, `--dry-run`
+
+**Automatic refresh:** macOS LaunchAgent at `~/Library/LaunchAgents/com.smorand.update-youtube-cookies.plist` runs every hour. Uses LaunchAgent (not cron) because cron cannot access macOS Keychain to decrypt Chrome cookies.
 
 #### 5. MCP Server (`internal/mcpserver`)
 
@@ -190,6 +213,12 @@ make build
 # Build MCP server
 make build-mcp
 
+# Build cookie refresh tool
+make build-cookies
+
+# Refresh YouTube cookies in Secret Manager
+make update-cookies
+
 # Install CLI to /usr/local/bin
 make install
 
@@ -226,8 +255,9 @@ iac/                            # Main infrastructure (GCS backend)
 ├── provider.tf                 # Generated (after init-deploy)
 ├── local.tf                    # Config loader
 ├── docker.tf                   # Docker build + push via kreuzwerker/docker
+├── network.tf                  # VPC, Cloud NAT (static IP), VPC Connector
 ├── secrets.tf                  # Secret Manager (OAuth credentials)
-└── workload-mcp.tf             # Artifact Registry, Cloud Run, DNS, IAM
+└── workload-mcp.tf             # Artifact Registry, Cloud Run, GCS bucket, DNS, IAM
 ```
 
 ### Deployment Commands
@@ -358,3 +388,4 @@ YouTube Data API v3 has daily quota limits:
 | `YOUTUBE_TOKEN_FILE` | Path to YouTube token JSON (CLI only) | `~/.credentials/youtube-token.json` |
 | `CREDENTIALS_DIR` | Directory containing credential files (CLI only) | `~/.credentials/` |
 | `ENVIRONMENT` | Deployment environment label | not set |
+| `DOWNLOADS_BUCKET` | GCS bucket for download file storage (Cloud Run) | not set |
