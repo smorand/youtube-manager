@@ -180,13 +180,9 @@ The MCP server can be deployed to Google Cloud Run for remote access.
 make init-plan
 make init-deploy
 
-# 2. Upload secrets to Secret Manager
+# 2. Upload OAuth credentials to Secret Manager
 gcloud secrets versions add scm-pwd-ytm-oauth-creds \
   --data-file=$HOME/.credentials/scm-pwd-web.json \
-  --project=project-fb127223-bfef-43d1-94e
-
-gcloud secrets versions add scm-pwd-ytm-token \
-  --data-file=$HOME/.credentials/youtube-token.json \
   --project=project-fb127223-bfef-43d1-94e
 
 # 3. Deploy infrastructure (Docker build + Cloud Run + DNS)

@@ -102,7 +102,12 @@ func (s *Server) registerPlaylistTools() {
 func (s *Server) handleListPlaylists(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	limit := req.GetInt("limit", 50)
 
-	playlists, err := s.playlistSvc.List(ctx, limit)
+	svc, err := s.getPlaylistSvc(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get YouTube service: %v", err)), nil
+	}
+
+	playlists, err := svc.List(ctx, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to list playlists: %v", err)), nil
 	}
@@ -133,7 +138,12 @@ func (s *Server) handleGetPlaylist(ctx context.Context, req mcp.CallToolRequest)
 	}
 	limit := req.GetInt("limit", 50)
 
-	items, err := s.playlistSvc.GetItems(ctx, playlistID, limit)
+	svc, err := s.getPlaylistSvc(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get YouTube service: %v", err)), nil
+	}
+
+	items, err := svc.GetItems(ctx, playlistID, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to get playlist items: %v", err)), nil
 	}
@@ -165,7 +175,12 @@ func (s *Server) handleCreatePlaylist(ctx context.Context, req mcp.CallToolReque
 	description := req.GetString("description", "")
 	privacy := req.GetString("privacy", "private")
 
-	playlist, err := s.playlistSvc.Create(ctx, title, description, privacy)
+	svc, err := s.getPlaylistSvc(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get YouTube service: %v", err)), nil
+	}
+
+	playlist, err := svc.Create(ctx, title, description, privacy)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to create playlist: %v", err)), nil
 	}
@@ -192,7 +207,12 @@ func (s *Server) handleDeletePlaylist(ctx context.Context, req mcp.CallToolReque
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	if err := s.playlistSvc.Delete(ctx, playlistID); err != nil {
+	svc, err := s.getPlaylistSvc(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get YouTube service: %v", err)), nil
+	}
+
+	if err := svc.Delete(ctx, playlistID); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to delete playlist: %v", err)), nil
 	}
 
@@ -209,7 +229,12 @@ func (s *Server) handleAddToPlaylist(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	if err := s.playlistSvc.AddVideo(ctx, playlistID, videoID); err != nil {
+	svc, err := s.getPlaylistSvc(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get YouTube service: %v", err)), nil
+	}
+
+	if err := svc.AddVideo(ctx, playlistID, videoID); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to add video to playlist: %v", err)), nil
 	}
 

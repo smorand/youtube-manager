@@ -36,12 +36,14 @@ locals {
   # Custom domain
   custom_domain = lookup(local.cloud_run_config, "custom_domain", "")
 
+  # Base URL for OAuth2 (derived from custom domain or Cloud Run URL)
+  mcp_base_url = local.custom_domain != "" ? "https://${local.custom_domain}" : ""
+
   # Service account email from init module (referenced by name)
   mcp_service_account = "${local.prefix}-cloudrun-${local.env}@${local.project_id}.iam.gserviceaccount.com"
 
-  # Secret names
+  # Secret name for OAuth credentials
   oauth_secret_id = google_secret_manager_secret.oauth_credentials.secret_id
-  token_secret_id = google_secret_manager_secret.youtube_token.secret_id
 }
 
 # ============================================
@@ -101,54 +103,25 @@ resource "google_cloud_run_v2_service" "mcp" {
         container_port = 8080
       }
 
-      # Environment variables
+      # Environment variables for OAuth2 server
       env {
-        name  = "OAUTH_CREDENTIALS_FILE"
-        value = "/secrets/creds/scm-pwd-web.json"
+        name  = "BASE_URL"
+        value = local.mcp_base_url
       }
 
       env {
-        name  = "YOUTUBE_TOKEN_FILE"
-        value = "/secrets/token/youtube-token.json"
+        name  = "SECRET_PROJECT"
+        value = local.project_id
+      }
+
+      env {
+        name  = "SECRET_NAME"
+        value = local.oauth_secret_id
       }
 
       env {
         name  = "ENVIRONMENT"
         value = local.env
-      }
-
-      # Secret volume mounts
-      volume_mounts {
-        name       = "oauth-creds"
-        mount_path = "/secrets/creds"
-      }
-
-      volume_mounts {
-        name       = "youtube-token"
-        mount_path = "/secrets/token"
-      }
-    }
-
-    # Secret volumes
-    volumes {
-      name = "oauth-creds"
-      secret {
-        secret = local.oauth_secret_id
-        items {
-          version = "latest"
-          path    = "scm-pwd-web.json"
-        }
-      }
-    }
-
-    volumes {
-      name = "youtube-token"
-      secret {
-        secret = local.token_secret_id
-        items {
-          version = "latest"
-          path    = "youtube-token.json"
-        }
       }
     }
   }

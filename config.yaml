@@ -32,4 +32,3 @@ gcp:
 
 secrets:
   oauth_credentials: scm-pwd-ytm-oauth-creds
-  youtube_token: scm-pwd-ytm-token

@@ -226,7 +226,7 @@ iac/                            # Main infrastructure (GCS backend)
 ├── provider.tf                 # Generated (after init-deploy)
 ├── local.tf                    # Config loader
 ├── docker.tf                   # Docker build + push via kreuzwerker/docker
-├── secrets.tf                  # Secret Manager (OAuth creds + YouTube token)
+├── secrets.tf                  # Secret Manager (OAuth credentials)
 └── workload-mcp.tf             # Artifact Registry, Cloud Run, DNS, IAM
 ```
 
@@ -245,26 +245,31 @@ make deploy             # Deploy (Docker build + Cloud Run + DNS)
 gcloud secrets versions add scm-pwd-ytm-oauth-creds \
   --data-file=$HOME/.credentials/scm-pwd-web.json \
   --project=project-fb127223-bfef-43d1-94e
-
-gcloud secrets versions add scm-pwd-ytm-token \
-  --data-file=$HOME/.credentials/youtube-token.json \
-  --project=project-fb127223-bfef-43d1-94e
 ```
 
 ### Transport Modes
 
 The MCP server supports two transport modes:
-- **Stdio** (default): Used locally, `PORT` env var not set
-- **HTTP** (Cloud Run): When `PORT` env var is set, serves on that port with `/health` and `/mcp` endpoints
+- **Stdio** (default): Used locally, no `BASE_URL` env var. Auth from `~/.credentials/` files.
+- **HTTP** (Cloud Run): When `BASE_URL` is set, serves HTTP with OAuth 2.1 authorization server.
 
-### Credentials Resolution
+### OAuth 2.1 Authentication (HTTP Mode)
 
-Auth credentials are resolved in order:
+On Cloud Run, the MCP server acts as an OAuth 2.1 authorization server:
+1. MCP client discovers auth via `/.well-known/oauth-protected-resource`
+2. Client redirects user to `/oauth/authorize` → server redirects to Google OAuth
+3. Google returns code to `/oauth/callback` → server exchanges for Google token
+4. Client exchanges code at `/oauth/token` → receives Google access/refresh tokens
+5. Client sends Bearer token on `/mcp` requests → middleware validates and injects into context
+
+OAuth credentials (client_id/secret) are loaded from Secret Manager via API.
+
+### Credentials Resolution (CLI Mode)
+
+For CLI and stdio MCP, credentials are resolved in order:
 1. `OAUTH_CREDENTIALS_FILE` / `YOUTUBE_TOKEN_FILE` env vars (exact file paths)
 2. `CREDENTIALS_DIR` env var (directory containing both files)
 3. `~/.credentials/` (default)
-
-On Cloud Run, secrets are mounted as files via Secret Manager volumes.
 
 ## API Rate Limits
 
@@ -285,9 +290,10 @@ YouTube Data API v3 has daily quota limits:
    - `youtube.force-ssl` - Required for write operations
 
 3. **MCP Server**
-   - Auth initialized before transport starts
+   - Stdio: Auth initialized eagerly before transport starts
+   - HTTP: OAuth 2.1 server with per-request auth via Bearer tokens
    - All status messages to stderr (stdout reserved for JSON-RPC in stdio mode)
-   - Cloud Run: secrets mounted via Secret Manager volumes
+   - Cloud Run: OAuth credentials loaded from Secret Manager via API
 
 ## Logging
 
@@ -344,8 +350,11 @@ YouTube Data API v3 has daily quota limits:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PORT` | HTTP listen port (enables HTTP mode) | not set (stdio mode) |
-| `OAUTH_CREDENTIALS_FILE` | Path to OAuth credentials JSON | `~/.credentials/scm-pwd-web.json` |
-| `YOUTUBE_TOKEN_FILE` | Path to YouTube token JSON | `~/.credentials/youtube-token.json` |
-| `CREDENTIALS_DIR` | Directory containing both credential files | `~/.credentials/` |
+| `BASE_URL` | Base URL for OAuth2 (enables HTTP mode) | not set (stdio mode) |
+| `PORT` | HTTP listen port | `8080` |
+| `SECRET_PROJECT` | GCP project for Secret Manager | not set |
+| `SECRET_NAME` | Secret name for OAuth credentials | not set |
+| `OAUTH_CREDENTIALS_FILE` | Path to OAuth credentials JSON (CLI fallback) | `~/.credentials/scm-pwd-web.json` |
+| `YOUTUBE_TOKEN_FILE` | Path to YouTube token JSON (CLI only) | `~/.credentials/youtube-token.json` |
+| `CREDENTIALS_DIR` | Directory containing credential files (CLI only) | `~/.credentials/` |
 | `ENVIRONMENT` | Deployment environment label | not set |

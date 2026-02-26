@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
-	"time"
+	"strconv"
 
 	"github.com/mark3labs/mcp-go/server"
 
@@ -21,55 +19,56 @@ func main() {
 
 	ctx := context.Background()
 
-	// Initialize auth and YouTube services
+	// Build configuration from environment
+	config := buildConfig()
+
 	slog.Info("Initializing YouTube Manager MCP server...")
-	srv, err := mcpserver.NewServer(ctx)
+	srv, err := mcpserver.NewServer(ctx, config)
 	if err != nil {
 		slog.Error("Failed to initialize server", "error", err)
 		os.Exit(1)
 	}
 
-	// Check if PORT is set (Cloud Run / HTTP mode)
-	port := os.Getenv("PORT")
-	if port != "" {
-		startHTTP(srv, port)
+	// HTTP mode (Cloud Run) vs stdio mode (local)
+	if config != nil && config.BaseURL != "" {
+		slog.Info("Starting HTTP mode with OAuth2")
+		if err := srv.Run(ctx); err != nil {
+			slog.Error("Server error", "error", err)
+			os.Exit(1)
+		}
 	} else {
-		startStdio(srv)
+		slog.Info("MCP server ready, starting stdio transport")
+		if err := server.ServeStdio(srv.MCPServer()); err != nil {
+			slog.Error("Server error", "error", err)
+			os.Exit(1)
+		}
 	}
 }
 
-// startStdio starts the MCP server over stdio transport.
-func startStdio(srv *mcpserver.Server) {
-	slog.Info("MCP server ready, starting stdio transport")
-	if err := server.ServeStdio(srv.MCPServer()); err != nil {
-		slog.Error("Server error", "error", err)
-		os.Exit(1)
-	}
-}
+// buildConfig creates a server config from environment variables.
+// Returns nil if no HTTP/OAuth2 configuration is present (stdio mode).
+func buildConfig() *mcpserver.Config {
+	baseURL := os.Getenv("BASE_URL")
+	port := os.Getenv("PORT")
 
-// startHTTP starts the MCP server over HTTP transport with a health endpoint.
-func startHTTP(srv *mcpserver.Server, port string) {
-	// Create the StreamableHTTP server for MCP
-	httpServer := server.NewStreamableHTTPServer(srv.MCPServer())
-
-	// Create HTTP mux with health check and MCP endpoint
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "OK")
-	})
-	mux.Handle("/mcp", httpServer)
-
-	addr := ":" + port
-	httpSrv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
+	// No BASE_URL means stdio mode
+	if baseURL == "" && port == "" {
+		return nil
 	}
 
-	slog.Info("MCP server ready, starting HTTP transport", "addr", addr)
-	if err := httpSrv.ListenAndServe(); err != nil {
-		slog.Error("HTTP server error", "error", err)
-		os.Exit(1)
+	portNum := 8080
+	if port != "" {
+		if p, err := strconv.Atoi(port); err == nil {
+			portNum = p
+		}
+	}
+
+	return &mcpserver.Config{
+		Host:           "0.0.0.0",
+		Port:           portNum,
+		BaseURL:        baseURL,
+		SecretProject:  os.Getenv("SECRET_PROJECT"),
+		SecretName:     os.Getenv("SECRET_NAME"),
+		CredentialFile: os.Getenv("OAUTH_CREDENTIALS_FILE"),
 	}
 }
