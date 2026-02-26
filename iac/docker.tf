@@ -42,7 +42,10 @@ resource "docker_image" "mcp" {
     server_hash     = filesha256("${path.root}/../internal/mcpserver/server.go")
     playlist_hash   = filesha256("${path.root}/../internal/mcpserver/playlist_tools.go")
     video_hash      = filesha256("${path.root}/../internal/mcpserver/video_tools.go")
-    download_hash   = filesha256("${path.root}/../internal/mcpserver/download_tools.go")
+    download_hash      = filesha256("${path.root}/../internal/mcpserver/download_tools.go")
+    dl_download_hash   = filesha256("${path.root}/../internal/download/download.go")
+    dl_cache_hash      = filesha256("${path.root}/../internal/download/cache.go")
+    dl_ffmpeg_hash     = filesha256("${path.root}/../internal/download/ffmpeg.go")
   }
 }
 

@@ -26,8 +26,8 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 
 FROM alpine:latest
 
-# Install ca-certificates for HTTPS requests and ffmpeg for audio processing
-RUN apk --no-cache add ca-certificates tzdata ffmpeg
+# Install ca-certificates, ffmpeg for audio processing, and yt-dlp for downloads
+RUN apk --no-cache add ca-certificates tzdata ffmpeg yt-dlp
 
 # Create non-root user for security
 RUN adduser -D -g '' appuser
@@ -51,6 +51,8 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
 # Environment variables:
+# - BASE_URL: Base URL for OAuth2 (enables HTTP mode)
 # - PORT: HTTP listen port (default 8080)
-# - CREDENTIALS_DIR: Path to credentials directory with OAuth files
+# - SECRET_PROJECT: GCP project for Secret Manager
+# - SECRET_NAME: Secret name for OAuth credentials
 ENTRYPOINT ["/app/youtube-manager-mcp"]

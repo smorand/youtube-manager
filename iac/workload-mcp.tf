@@ -89,7 +89,7 @@ resource "google_cloud_run_v2_service" "mcp" {
     }
 
     containers {
-      image = local.mcp_image
+      image = "${local.cloud_run_region}-docker.pkg.dev/${local.project_id}/${google_artifact_registry_repository.mcp.name}/${local.mcp_name}@${docker_registry_image.mcp.sha256_digest}"
 
       resources {
         limits = {
