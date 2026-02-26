@@ -24,10 +24,11 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 
 # Stage 2: Final minimal image
 
-FROM alpine:latest
+FROM --platform=linux/amd64 alpine:latest
 
-# Install ca-certificates, ffmpeg for audio processing, and yt-dlp for downloads
-RUN apk --no-cache add ca-certificates tzdata ffmpeg yt-dlp
+# Install ca-certificates, ffmpeg, yt-dlp, and nodejs (JS runtime for yt-dlp)
+RUN apk --no-cache add ca-certificates tzdata ffmpeg python3 py3-pip nodejs \
+    && pip3 install --break-system-packages yt-dlp
 
 # Create non-root user for security
 RUN adduser -D -g '' appuser

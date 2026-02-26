@@ -88,6 +88,12 @@ resource "google_cloud_run_v2_service" "mcp" {
       max_instance_count = local.mcp_max_instances
     }
 
+    # Route all egress through VPC Connector → Cloud NAT (static IP)
+    vpc_access {
+      connector = google_vpc_access_connector.main.id
+      egress    = "ALL_TRAFFIC"
+    }
+
     containers {
       image = "${local.cloud_run_region}-docker.pkg.dev/${local.project_id}/${google_artifact_registry_repository.mcp.name}/${local.mcp_name}@${docker_registry_image.mcp.sha256_digest}"
 

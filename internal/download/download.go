@@ -9,6 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+
+	secretmanager "cloud.google.com/go/secretmanager/apiv1"
+	secretmanagerpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 )
 
 // DownloadResult contains metadata about a completed download.
@@ -154,12 +158,61 @@ func (d *Downloader) DownloadWithResult(ctx context.Context, url string) (*Downl
 	}, nil
 }
 
-// cookieArgs returns yt-dlp arguments for cookie-based authentication.
-// Uses browser cookies when running locally, empty on Cloud Run.
-func cookieArgs() []string {
+// cookiesPath caches the path to the cookies file written from Secret Manager.
+var (
+	cookiesOnce sync.Once
+	cookiesFile string
+)
+
+// ensureCookiesFile loads YouTube cookies from Secret Manager and writes them
+// to a temp file. Returns the path or empty string if unavailable.
+func ensureCookiesFile() string {
+	cookiesOnce.Do(func() {
+		project := os.Getenv("SECRET_PROJECT")
+		if project == "" {
+			return
+		}
+		name := fmt.Sprintf("projects/%s/secrets/scm-pwd-ytm-youtube-cookies/versions/latest", project)
+
+		ctx := context.Background()
+		client, err := secretmanager.NewClient(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create secret manager client: %v\n", err)
+			return
+		}
+		defer client.Close()
+
+		resp, err := client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: name})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load cookies secret: %v\n", err)
+			return
+		}
+
+		f, err := os.CreateTemp("", "yt-cookies-*.txt")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to create cookies temp file: %v\n", err)
+			return
+		}
+		if _, err := f.Write(resp.Payload.Data); err != nil {
+			f.Close()
+			return
+		}
+		f.Close()
+		cookiesFile = f.Name()
+		fmt.Fprintf(os.Stderr, "Loaded YouTube cookies from Secret Manager\n")
+	})
+	return cookiesFile
+}
+
+// envArgs returns yt-dlp arguments based on the runtime environment.
+// Local: uses browser cookies. Cloud Run: uses nodejs runtime + Secret Manager cookies.
+func envArgs() []string {
 	if os.Getenv("BASE_URL") != "" {
-		// Cloud Run: no browser available
-		return nil
+		args := []string{"--js-runtimes", "node", "--remote-components", "ejs:github"}
+		if path := ensureCookiesFile(); path != "" {
+			args = append(args, "--cookies", path)
+		}
+		return args
 	}
 	return []string{"--cookies-from-browser", "chrome"}
 }
@@ -170,13 +223,15 @@ func (d *Downloader) getVideoInfo(ctx context.Context, url string) (*ytdlpInfo, 
 		"--dump-json",
 		"--no-download",
 	}
-	args = append(args, cookieArgs()...)
+	args = append(args, envArgs()...)
 	args = append(args, url)
 
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("yt-dlp info failed: %w", err)
+		return nil, fmt.Errorf("yt-dlp info failed: %w: %s", err, stderr.String())
 	}
 
 	var info ytdlpInfo
@@ -193,7 +248,7 @@ func (d *Downloader) downloadToCache(ctx context.Context, url, videoID string, c
 	outputTemplate := filepath.Join(cache.dir, videoID+".%(ext)s")
 
 	args := []string{}
-	args = append(args, cookieArgs()...)
+	args = append(args, envArgs()...)
 	args = append(args,
 		"--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
 		"--merge-output-format", "mp4",
@@ -205,11 +260,13 @@ func (d *Downloader) downloadToCache(ctx context.Context, url, videoID string, c
 	fmt.Fprintf(os.Stderr, "Downloading to cache...\n")
 
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
-	cmd.Stderr = os.Stderr
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("yt-dlp download failed: %w", err)
+		return "", fmt.Errorf("yt-dlp download failed: %w: %s", err, stderr.String())
 	}
+	fmt.Fprint(os.Stderr, stderr.String())
 
 	// Find the downloaded file
 	cachedPath, found := cache.GetCachedPath(videoID)
