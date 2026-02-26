@@ -65,7 +65,12 @@ func (s *Server) handleSearchVideos(ctx context.Context, req mcp.CallToolRequest
 	}
 	limit := req.GetInt("limit", 10)
 
-	results, err := s.videoSvc.Search(ctx, query, limit)
+	svc, err := s.getVideoSvc(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get YouTube service: %v", err)), nil
+	}
+
+	results, err := svc.Search(ctx, query, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to search videos: %v", err)), nil
 	}
@@ -95,7 +100,12 @@ func (s *Server) handleGetVideo(ctx context.Context, req mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	video, err := s.videoSvc.Get(ctx, videoID)
+	svc, err := s.getVideoSvc(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get YouTube service: %v", err)), nil
+	}
+
+	video, err := svc.Get(ctx, videoID)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to get video: %v", err)), nil
 	}
