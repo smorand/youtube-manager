@@ -141,7 +141,7 @@ youtube-manager/
 ### Dependencies
 
 - `github.com/spf13/cobra` - CLI framework
-- `github.com/kkdai/youtube/v2` - Native YouTube video downloads
+- External: `yt-dlp` binary for YouTube video downloads (with browser cookie support locally)
 - `github.com/mark3labs/mcp-go` - MCP server framework
 - `golang.org/x/oauth2` - OAuth 2.0 authentication
 - `google.golang.org/api/youtube/v3` - YouTube Data API client
