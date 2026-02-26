@@ -25,9 +25,6 @@ func (s *Server) registerDownloadTools() {
 				mcp.Required(),
 				mcp.Description("YouTube URL or video ID"),
 			),
-			mcp.WithString("output_dir",
-				mcp.Description("Output directory (default: current directory). Ignored on Cloud Run."),
-			),
 			mcp.WithString("format",
 				mcp.Description("Video format/quality (e.g., 720p, 1080p, best). Default: best"),
 			),
@@ -65,26 +62,20 @@ func (s *Server) handleDownloadVideo(ctx context.Context, req mcp.CallToolReques
 	}
 
 	bucket := os.Getenv("DOWNLOADS_BUCKET")
-	remoteMode := bucket != ""
-
-	outputDir := req.GetString("output_dir", ".")
 	format := req.GetString("format", "best")
 	audioOnly := req.GetBool("audio_only", false)
 	extractFrom := req.GetInt("extract_from", 0)
 	extractTo := req.GetInt("extract_to", 0)
 
-	// On Cloud Run, use a server-local temp directory instead of client path
-	if remoteMode {
-		tmpDir, err := os.MkdirTemp("", "ytm-download-*")
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("failed to create temp dir: %v", err)), nil
-		}
-		defer os.RemoveAll(tmpDir)
-		outputDir = tmpDir
+	// Use a temp directory for output (file is uploaded to GCS or returned via MCP)
+	tmpDir, err := os.MkdirTemp("", "ytm-download-*")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to create temp dir: %v", err)), nil
 	}
+	defer os.RemoveAll(tmpDir)
 
 	url := download.ResolveVideoURL(urlOrID)
-	downloader := download.NewDownloader(outputDir, format, audioOnly, extractFrom, extractTo)
+	downloader := download.NewDownloader(tmpDir, format, audioOnly, extractFrom, extractTo)
 
 	result, err := downloader.DownloadWithResult(ctx, url)
 	if err != nil {
@@ -101,15 +92,15 @@ func (s *Server) handleDownloadVideo(ctx context.Context, req mcp.CallToolReques
 		Cached:   result.Cached,
 	}
 
-	// On Cloud Run, upload to GCS and return a signed URL
-	if remoteMode {
+	// Upload to GCS and return a signed URL
+	if bucket != "" {
 		signedURL, err := uploadAndSign(ctx, bucket, result.FilePath)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to upload to GCS: %v", err)), nil
 		}
 		resp.FileName = filepath.Base(result.FilePath)
 		resp.DownloadURL = signedURL
-		resp.FilePath = "" // Server path is meaningless to the client
+		resp.FilePath = ""
 	}
 
 	data, err := json.MarshalIndent(resp, "", "  ")
