@@ -32,5 +32,9 @@ gcp:
       name: youtube-manager
       format: DOCKER
 
+    storage:
+      downloads_bucket: scmytm-downloads-prd
+      downloads_expiry: 600  # signed URL expiry in seconds (10 min)
+
 secrets:
   oauth_credentials: scm-pwd-ytm-oauth-creds

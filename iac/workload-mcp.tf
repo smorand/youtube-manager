@@ -2,8 +2,9 @@
 #
 # Resources:
 # - Artifact Registry repository for container images
+# - GCS bucket for temporary download files (with lifecycle cleanup)
 # - Cloud Run service for MCP server
-# - Service account IAM permissions (Secret Manager)
+# - Service account IAM permissions (Secret Manager, GCS)
 # - IAM binding for unauthenticated access
 # - DNS CNAME record for custom domain
 # - Cloud Run domain mapping
@@ -44,6 +45,10 @@ locals {
 
   # Secret name for OAuth credentials
   oauth_secret_id = google_secret_manager_secret.oauth_credentials.secret_id
+
+  # Storage configuration
+  storage_config    = lookup(local.gcp_resources, "storage", {})
+  downloads_bucket  = lookup(local.storage_config, "downloads_bucket", "${local.prefix}-downloads-${local.env}")
 }
 
 # ============================================
@@ -63,6 +68,33 @@ resource "google_artifact_registry_repository" "mcp" {
   location      = local.cloud_run_region
   format        = local.artifact_registry_format
   description   = "Docker repository for YouTube Manager MCP server"
+
+  labels = {
+    environment = local.env
+    managed_by  = "terraform"
+  }
+}
+
+# ============================================
+# GCS BUCKET FOR DOWNLOADS
+# ============================================
+
+resource "google_storage_bucket" "downloads" {
+  name          = local.downloads_bucket
+  location      = local.cloud_run_region
+  force_destroy = true
+
+  uniform_bucket_level_access = true
+
+  # Auto-delete objects after 1 day
+  lifecycle_rule {
+    condition {
+      age = 1
+    }
+    action {
+      type = "Delete"
+    }
+  }
 
   labels = {
     environment = local.env
@@ -129,6 +161,11 @@ resource "google_cloud_run_v2_service" "mcp" {
         name  = "ENVIRONMENT"
         value = local.env
       }
+
+      env {
+        name  = "DOWNLOADS_BUCKET"
+        value = google_storage_bucket.downloads.name
+      }
     }
   }
 
@@ -151,6 +188,20 @@ resource "google_cloud_run_v2_service" "mcp" {
 resource "google_project_iam_member" "mcp_secretmanager" {
   project = local.project_id
   role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${local.mcp_service_account}"
+}
+
+# Grant GCS access for upload and signed URL generation
+resource "google_storage_bucket_iam_member" "mcp_downloads" {
+  bucket = google_storage_bucket.downloads.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${local.mcp_service_account}"
+}
+
+# Allow service account to sign URLs
+resource "google_project_iam_member" "mcp_sign_blobs" {
+  project = local.project_id
+  role    = "roles/iam.serviceAccountTokenCreator"
   member  = "serviceAccount:${local.mcp_service_account}"
 }
 
