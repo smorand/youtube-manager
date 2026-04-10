@@ -164,7 +164,7 @@ $(CURRENT_COOKIES_BINARY): $(GO_SUM_PATH)
 
 # Update cookies: build and run the tool
 update-cookies: build-cookies
-	@$(CURRENT_COOKIES_BINARY)
+	@$(CURRENT_COOKIES_BINARY) --host 31.97.54.67 --user root --remote-path /app/youtube-manager/cookies
 
 # Generate go.sum
 $(GO_SUM_PATH): $(GO_MOD_PATH)
