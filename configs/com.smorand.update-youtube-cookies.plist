@@ -8,8 +8,14 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Users/sebastien/Documents/Projects/youtube-manager/bin/update-cookies-darwin-arm64</string>
-        <string>--project</string>
-        <string>project-fb127223-bfef-43d1-94e</string>
+        <string>--host</string>
+        <string>31.97.54.67</string>
+        <string>--user</string>
+        <string>root</string>
+        <string>--key</string>
+        <string>/Users/sebastien/.ssh/id_rsa</string>
+        <string>--remote-path</string>
+        <string>/app/youtube-manager/cookies</string>
     </array>
 
     <key>EnvironmentVariables</key>
