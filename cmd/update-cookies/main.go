@@ -1,19 +1,17 @@
 // Command update-cookies exports YouTube cookies from a local browser
-// and uploads them to GCP Secret Manager for use by the Cloud Run MCP server.
+// and copies them to a remote VPS via SCP for use by the MCP server.
 //
 // Usage:
 //
-//	update-cookies                          # export from Chrome, upload to Secret Manager
-//	update-cookies --browser firefox        # export from Firefox
-//	update-cookies --file cookies.txt       # upload an existing Netscape cookie file
-//	update-cookies --project my-gcp-project # override GCP project
-//	update-cookies --dry-run                # show what would be uploaded without uploading
+//	update-cookies --host 1.2.3.4                    # export from Chrome, SCP to VPS
+//	update-cookies --host 1.2.3.4 --browser firefox  # export from Firefox
+//	update-cookies --host 1.2.3.4 --file cookies.txt # upload an existing Netscape cookie file
+//	update-cookies --dry-run                          # show what would be uploaded without uploading
 package main
 
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -21,16 +19,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	secretmanager "cloud.google.com/go/secretmanager/apiv1"
-	secretmanagerpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
-	"gopkg.in/yaml.v3"
 )
 
-const (
-	secretID    = "scm-pwd-ytm-youtube-cookies"
-	configFile  = "config.yaml"
-)
+const cookieFileName = "cookies.txt"
 
 // youtubeDomains are the cookie domains relevant for YouTube authentication.
 var youtubeDomains = []string{
@@ -43,34 +34,27 @@ var youtubeDomains = []string{
 func main() {
 	browser := flag.String("browser", "chrome", "Browser to export cookies from (chrome, firefox, edge, safari)")
 	file := flag.String("file", "", "Path to an existing Netscape cookie file (skips browser export)")
-	project := flag.String("project", "", "GCP project ID (default: from config.yaml)")
+	host := flag.String("host", "", "VPS host (IP or hostname)")
+	user := flag.String("user", "root", "SSH user")
+	key := flag.String("key", filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa"), "Path to SSH private key")
+	remotePath := flag.String("remote-path", "/app/youtube-manager/cookies", "Remote directory for cookie file")
 	dryRun := flag.Bool("dry-run", false, "Show what would be uploaded without uploading")
 	flag.Parse()
 
-	// Resolve GCP project
-	projectID := *project
-	if projectID == "" {
-		projectID = os.Getenv("SECRET_PROJECT")
-	}
-	if projectID == "" {
-		projectID = loadProjectFromConfig()
-	}
-	if projectID == "" {
-		log.Fatal("GCP project not specified. Use --project, SECRET_PROJECT env var, or config.yaml")
+	if *host == "" {
+		log.Fatal("VPS host not specified. Use --host flag.")
 	}
 
 	var cookieData []byte
 	var err error
 
 	if *file != "" {
-		// Use provided file
 		cookieData, err = os.ReadFile(*file)
 		if err != nil {
 			log.Fatalf("Failed to read cookie file: %v", err)
 		}
 		fmt.Fprintf(os.Stderr, "Read cookie file: %s\n", *file)
 	} else {
-		// Export from browser via yt-dlp
 		cookieData, err = exportBrowserCookies(*browser)
 		if err != nil {
 			log.Fatalf("Failed to export cookies: %v", err)
@@ -86,17 +70,17 @@ func main() {
 	fmt.Fprintf(os.Stderr, "Total cookies:    %d lines (%s)\n", totalLines, formatBytes(int64(len(cookieData))))
 	fmt.Fprintf(os.Stderr, "Filtered cookies: %d lines (%s)\n", filteredLines, formatBytes(int64(len(filtered))))
 	fmt.Fprintf(os.Stderr, "Domains kept:     %s\n", strings.Join(youtubeDomains, ", "))
-	fmt.Fprintf(os.Stderr, "Target project:   %s\n", projectID)
-	fmt.Fprintf(os.Stderr, "Target secret:    %s\n", secretID)
+	fmt.Fprintf(os.Stderr, "Target:           %s@%s:%s/%s\n", *user, *host, *remotePath, cookieFileName)
 
 	if *dryRun {
-		fmt.Fprintf(os.Stderr, "\n[dry-run] Would upload %d bytes to projects/%s/secrets/%s\n", len(filtered), projectID, secretID)
+		fmt.Fprintf(os.Stderr, "\n[dry-run] Would upload %d bytes to %s@%s:%s/%s\n",
+			len(filtered), *user, *host, *remotePath, cookieFileName)
 		return
 	}
 
-	// Upload to Secret Manager
-	if err := uploadSecret(projectID, filtered); err != nil {
-		log.Fatalf("Failed to upload to Secret Manager: %v", err)
+	// Write filtered cookies to temp file, then SCP to VPS
+	if err := uploadViaSCP(*host, *user, *key, *remotePath, filtered); err != nil {
+		log.Fatalf("Failed to upload cookies via SCP: %v", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "\nCookies uploaded successfully.\n")
@@ -113,8 +97,6 @@ func exportBrowserCookies(browser string) ([]byte, error) {
 
 	fmt.Fprintf(os.Stderr, "Exporting cookies from %s via yt-dlp...\n", browser)
 
-	// yt-dlp can export cookies with --cookies-from-browser and --cookies
-	// We use a dummy URL with --skip-download to trigger cookie export only
 	cmd := exec.Command("yt-dlp",
 		"--cookies-from-browser", browser,
 		"--cookies", tmpFile,
@@ -140,20 +122,17 @@ func exportBrowserCookies(browser string) ([]byte, error) {
 func filterCookies(data []byte) []byte {
 	var filtered strings.Builder
 	scanner := bufio.NewScanner(bytes.NewReader(data))
-	// Increase buffer for potentially long lines
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
 
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// Keep comment lines (Netscape header)
 		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
 			filtered.WriteString(line)
 			filtered.WriteByte('\n')
 			continue
 		}
 
-		// Cookie lines are tab-separated: domain, flag, path, secure, expiry, name, value
 		fields := strings.Split(line, "\t")
 		if len(fields) < 7 {
 			continue
@@ -179,82 +158,51 @@ func isYouTubeDomain(domain string) bool {
 	return false
 }
 
-// uploadSecret creates a new version of the secret with the given data.
-func uploadSecret(projectID string, data []byte) error {
-	ctx := context.Background()
-	client, err := secretmanager.NewClient(ctx)
+// uploadViaSCP writes cookies to a temp file and copies it to the VPS via scp.
+func uploadViaSCP(host, user, keyPath, remotePath string, data []byte) error {
+	tmpFile, err := os.CreateTemp("", "ytm-cookies-upload-*.txt")
 	if err != nil {
-		return fmt.Errorf("failed to create Secret Manager client: %w", err)
+		return fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer client.Close()
+	defer os.Remove(tmpFile.Name())
 
-	secretName := fmt.Sprintf("projects/%s/secrets/%s", projectID, secretID)
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+	tmpFile.Close()
 
-	// Ensure secret exists
-	_, err = client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: secretName})
-	if err != nil {
-		// Create the secret if it doesn't exist
-		fmt.Fprintf(os.Stderr, "Creating secret %s...\n", secretID)
-		_, err = client.CreateSecret(ctx, &secretmanagerpb.CreateSecretRequest{
-			Parent:   fmt.Sprintf("projects/%s", projectID),
-			SecretId: secretID,
-			Secret: &secretmanagerpb.Secret{
-				Replication: &secretmanagerpb.Replication{
-					Replication: &secretmanagerpb.Replication_Automatic_{
-						Automatic: &secretmanagerpb.Replication_Automatic{},
-					},
-				},
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create secret: %w", err)
-		}
+	// Ensure remote directory exists
+	dest := fmt.Sprintf("%s@%s", user, host)
+	fmt.Fprintf(os.Stderr, "Ensuring remote directory %s exists...\n", remotePath)
+
+	mkdirCmd := exec.Command("ssh",
+		"-i", keyPath,
+		"-o", "StrictHostKeyChecking=accept-new",
+		dest,
+		"mkdir", "-p", remotePath,
+	)
+	mkdirCmd.Stderr = os.Stderr
+	if err := mkdirCmd.Run(); err != nil {
+		return fmt.Errorf("failed to create remote directory: %w", err)
 	}
 
-	// Add new version
-	fmt.Fprintf(os.Stderr, "Uploading new secret version...\n")
-	resp, err := client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{
-		Parent: secretName,
-		Payload: &secretmanagerpb.SecretPayload{
-			Data: data,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to add secret version: %w", err)
+	// SCP the file
+	remoteDest := fmt.Sprintf("%s:%s/%s", dest, remotePath, cookieFileName)
+	fmt.Fprintf(os.Stderr, "Uploading cookies via SCP to %s...\n", remoteDest)
+
+	scpCmd := exec.Command("scp",
+		"-i", keyPath,
+		"-o", "StrictHostKeyChecking=accept-new",
+		tmpFile.Name(),
+		remoteDest,
+	)
+	scpCmd.Stderr = os.Stderr
+	if err := scpCmd.Run(); err != nil {
+		return fmt.Errorf("scp failed: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Created version: %s\n", resp.Name)
 	return nil
-}
-
-// loadProjectFromConfig reads the GCP project ID from config.yaml.
-func loadProjectFromConfig() string {
-	// Try current directory, then walk up
-	paths := []string{configFile}
-	for _, p := range []string{".", ".."} {
-		paths = append(paths, filepath.Join(p, configFile))
-	}
-
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-
-		var config struct {
-			GCP struct {
-				ProjectID string `yaml:"project_id"`
-			} `yaml:"gcp"`
-		}
-		if err := yaml.Unmarshal(data, &config); err != nil {
-			continue
-		}
-		if config.GCP.ProjectID != "" {
-			return config.GCP.ProjectID
-		}
-	}
-
-	return ""
 }
 
 func countLines(data []byte) int {
