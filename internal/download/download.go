@@ -164,10 +164,22 @@ var (
 	cookiesFile string
 )
 
-// ensureCookiesFile loads YouTube cookies from Secret Manager and writes them
-// to a temp file. Returns the path or empty string if unavailable.
+// ensureCookiesFile loads YouTube cookies from a local file or Secret Manager.
+// Returns the path or empty string if unavailable.
 func ensureCookiesFile() string {
 	cookiesOnce.Do(func() {
+		// Priority 1: Local cookie file (VPS deployment)
+		localPath := os.Getenv("COOKIES_FILE")
+		if localPath == "" {
+			localPath = "/app/data/youtube-manager/cookies.txt"
+		}
+		if _, err := os.Stat(localPath); err == nil {
+			cookiesFile = localPath
+			fmt.Fprintf(os.Stderr, "Loaded YouTube cookies from local file: %s\n", localPath)
+			return
+		}
+
+		// Priority 2: Secret Manager (Cloud Run fallback)
 		project := os.Getenv("SECRET_PROJECT")
 		if project == "" {
 			return

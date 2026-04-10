@@ -64,11 +64,14 @@ func buildConfig() *mcpserver.Config {
 	}
 
 	return &mcpserver.Config{
-		Host:           "0.0.0.0",
-		Port:           portNum,
-		BaseURL:        baseURL,
-		SecretProject:  os.Getenv("SECRET_PROJECT"),
-		SecretName:     os.Getenv("SECRET_NAME"),
-		CredentialFile: os.Getenv("OAUTH_CREDENTIALS_FILE"),
+		Host:            "0.0.0.0",
+		Port:            portNum,
+		BaseURL:         baseURL,
+		SecretProject:   os.Getenv("SECRET_PROJECT"),
+		SecretName:      os.Getenv("SECRET_NAME"),
+		CredentialFile:  os.Getenv("OAUTH_CREDENTIALS_FILE"),
+		VaultAddr:       os.Getenv("VAULT_ADDR"),
+		VaultSecretPath: os.Getenv("VAULT_SECRET_PATH"),
+		VaultToken:      os.Getenv("VAULT_TOKEN"),
 	}
 }

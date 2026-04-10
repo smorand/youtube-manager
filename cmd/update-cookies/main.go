@@ -37,7 +37,7 @@ func main() {
 	host := flag.String("host", "", "VPS host (IP or hostname)")
 	user := flag.String("user", "root", "SSH user")
 	key := flag.String("key", filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa"), "Path to SSH private key")
-	remotePath := flag.String("remote-path", "/app/youtube-manager/cookies", "Remote directory for cookie file")
+	remotePath := flag.String("remote-path", "/app/data/youtube-manager", "Remote directory for cookie file")
 	dryRun := flag.Bool("dry-run", false, "Show what would be uploaded without uploading")
 	flag.Parse()
 
