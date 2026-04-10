@@ -1,0 +1,17 @@
+services:
+  youtube-manager:
+    build: .
+    container_name: youtube-manager
+    restart: unless-stopped
+    expose:
+      - "8080"
+    env_file:
+      - /app/data/youtube-manager/.env
+    volumes:
+      - /app/data/youtube-manager:/app/data/youtube-manager
+    networks:
+      - proxy-network
+
+networks:
+  proxy-network:
+    external: true

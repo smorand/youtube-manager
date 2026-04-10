@@ -129,29 +129,38 @@ type OAuth2Server struct {
 	codesMu sync.RWMutex
 	codes   map[string]*authorizationCode
 
-	secretProject  string
-	secretName     string
-	credentialFile string
+	secretProject   string
+	secretName      string
+	credentialFile  string
+	vaultAddr       string
+	vaultSecretPath string
+	vaultToken      string
 }
 
 // OAuth2ServerConfig holds configuration for the OAuth2 server.
 type OAuth2ServerConfig struct {
-	BaseURL        string
-	SecretProject  string
-	SecretName     string
-	CredentialFile string
+	BaseURL         string
+	SecretProject   string
+	SecretName      string
+	CredentialFile  string
+	VaultAddr       string
+	VaultSecretPath string
+	VaultToken      string
 }
 
 // NewOAuth2Server creates a new OAuth2 authorization server.
 func NewOAuth2Server(cfg *OAuth2ServerConfig) *OAuth2Server {
 	s := &OAuth2Server{
-		baseURL:        cfg.BaseURL,
-		secretProject:  cfg.SecretProject,
-		secretName:     cfg.SecretName,
-		credentialFile: cfg.CredentialFile,
-		clients:        make(map[string]*registeredClient),
-		states:         make(map[string]*authorizationState),
-		codes:          make(map[string]*authorizationCode),
+		baseURL:         cfg.BaseURL,
+		secretProject:   cfg.SecretProject,
+		secretName:      cfg.SecretName,
+		credentialFile:  cfg.CredentialFile,
+		vaultAddr:       cfg.VaultAddr,
+		vaultSecretPath: cfg.VaultSecretPath,
+		vaultToken:      cfg.VaultToken,
+		clients:         make(map[string]*registeredClient),
+		states:          make(map[string]*authorizationState),
+		codes:           make(map[string]*authorizationCode),
 	}
 
 	go s.cleanupExpiredStates()
@@ -194,7 +203,7 @@ func (s *OAuth2Server) cleanupExpiredCodes() {
 	}
 }
 
-// LoadCredentials loads Google OAuth credentials from Secret Manager or file.
+// LoadCredentials loads Google OAuth credentials from Vault, Secret Manager, or file.
 func (s *OAuth2Server) LoadCredentials(ctx context.Context) error {
 	s.oauthConfigMu.Lock()
 	defer s.oauthConfigMu.Unlock()
@@ -206,8 +215,18 @@ func (s *OAuth2Server) LoadCredentials(ctx context.Context) error {
 	var credentialsJSON []byte
 	var err error
 
-	// Try Secret Manager first
-	if s.secretProject != "" && s.secretName != "" {
+	// Try Vault first
+	if s.vaultAddr != "" && s.vaultToken != "" {
+		credentialsJSON, err = s.loadFromVault()
+		if err != nil {
+			slog.Warn("Failed to load credentials from Vault", "error", err)
+		} else if credentialsJSON != nil {
+			slog.Info("OAuth credentials loaded from Vault", "addr", s.vaultAddr)
+		}
+	}
+
+	// Try Secret Manager
+	if credentialsJSON == nil && s.secretProject != "" && s.secretName != "" {
 		credentialsJSON, err = loadFromSecretManager(ctx, s.secretProject, s.secretName)
 		if err != nil {
 			slog.Warn("Failed to load credentials from Secret Manager", "error", err)
@@ -226,7 +245,7 @@ func (s *OAuth2Server) LoadCredentials(ctx context.Context) error {
 	}
 
 	if credentialsJSON == nil {
-		return fmt.Errorf("no OAuth credentials available: configure Secret Manager or credential file")
+		return fmt.Errorf("no OAuth credentials available: configure Vault, Secret Manager, or credential file")
 	}
 
 	config, err := google.ConfigFromJSON(credentialsJSON, auth.Scopes...)
@@ -735,4 +754,64 @@ func loadFromSecretManager(ctx context.Context, project, secretName string) ([]b
 	}
 
 	return result.Payload.Data, nil
+}
+
+// loadFromVault loads credentials from HashiCorp Vault KV v2 secret store.
+func (s *OAuth2Server) loadFromVault() ([]byte, error) {
+	if s.vaultAddr == "" || s.vaultToken == "" {
+		return nil, nil
+	}
+
+	secretPath := s.vaultSecretPath
+	if secretPath == "" {
+		secretPath = "secret/credentials/google-credentials"
+	}
+
+	return loadFromVaultHTTP(s.vaultAddr, s.vaultToken, secretPath)
+}
+
+// loadFromVaultHTTP fetches a secret from Vault KV v2 via HTTP API.
+func loadFromVaultHTTP(vaultAddr, vaultToken, secretPath string) ([]byte, error) {
+	url := fmt.Sprintf("%s/v1/secret/data/%s", strings.TrimRight(vaultAddr, "/"), secretPath)
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create vault request: %w", err)
+	}
+	req.Header.Set("X-Vault-Token", vaultToken)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("vault connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("vault returned status %d", resp.StatusCode)
+	}
+
+	var vaultResp struct {
+		Data struct {
+			Data json.RawMessage `json:"data"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&vaultResp); err != nil {
+		return nil, fmt.Errorf("parse vault response: %w", err)
+	}
+
+	if len(vaultResp.Data.Data) == 0 {
+		return nil, fmt.Errorf("vault returned empty credentials")
+	}
+
+	var kvData map[string]string
+	if json.Unmarshal(vaultResp.Data.Data, &kvData) == nil && len(kvData) == 1 {
+		for _, v := range kvData {
+			if json.Valid([]byte(v)) {
+				return []byte(v), nil
+			}
+		}
+	}
+
+	return vaultResp.Data.Data, nil
 }

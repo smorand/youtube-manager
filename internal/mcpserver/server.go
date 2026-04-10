@@ -29,6 +29,11 @@ type Config struct {
 	SecretProject string // GCP project for Secret Manager
 	SecretName    string // Secret name for OAuth credentials
 
+	// Vault settings
+	VaultAddr       string // HashiCorp Vault address
+	VaultSecretPath string // Vault KV v2 secret path
+	VaultToken      string // Vault authentication token
+
 	// File-based settings (fallback)
 	CredentialFile string
 }
@@ -184,10 +189,13 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Initialize OAuth2 server
 	s.oauth2Server = NewOAuth2Server(&OAuth2ServerConfig{
-		BaseURL:        s.config.BaseURL,
-		SecretProject:  s.config.SecretProject,
-		SecretName:     s.config.SecretName,
-		CredentialFile: credFile,
+		BaseURL:         s.config.BaseURL,
+		SecretProject:   s.config.SecretProject,
+		SecretName:      s.config.SecretName,
+		CredentialFile:  credFile,
+		VaultAddr:       s.config.VaultAddr,
+		VaultSecretPath: s.config.VaultSecretPath,
+		VaultToken:      s.config.VaultToken,
 	})
 
 	// Register OAuth2 routes (not protected by auth)
