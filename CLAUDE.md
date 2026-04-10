@@ -47,6 +47,8 @@ youtube-manager/
 │   └── youtube/              # YouTube API services
 │       ├── playlist.go       # Playlist operations
 │       └── video.go          # Video operations
+├── configs/                  # Configuration files
+│   └── com.smorand.update-youtube-cookies.plist  # LaunchAgent reference copy
 ├── bin/                      # Compiled binaries (git-ignored)
 │   ├── youtube-manager-*     # CLI binaries
 │   ├── youtube-manager-mcp-* # MCP server binaries

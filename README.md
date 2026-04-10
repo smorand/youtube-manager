@@ -211,8 +211,9 @@ The tool exports cookies from your local Chrome browser via yt-dlp, filters to Y
 
 #### Automatic Refresh (macOS LaunchAgent)
 
-A LaunchAgent runs every hour to keep cookies fresh:
+A LaunchAgent runs every hour to keep cookies fresh. A reference copy is kept in `configs/com.smorand.update-youtube-cookies.plist`.
 
+Installed at:
 ```
 ~/Library/LaunchAgents/com.smorand.update-youtube-cookies.plist
 ```
@@ -290,6 +291,7 @@ youtube-manager/
 ├── Dockerfile                # Multi-stage Docker build for Cloud Run
 ├── go.mod                    # Go module definition
 ├── go.sum                    # Dependency checksums
+├── configs/                  # Configuration files (LaunchAgent plist)
 ├── cmd/                      # Main applications
 │   ├── youtube-manager/      # CLI entry point
 │   │   └── main.go
