@@ -771,8 +771,11 @@ func (s *OAuth2Server) loadFromVault() ([]byte, error) {
 }
 
 // loadFromVaultHTTP fetches a secret from Vault KV v2 via HTTP API.
+// secretPath format: "<mount>/<key_path>" (e.g., "secret/credentials/google-credentials")
+// This is split into mount and key to build the KV v2 API path: /v1/<mount>/data/<key_path>
 func loadFromVaultHTTP(vaultAddr, vaultToken, secretPath string) ([]byte, error) {
-	url := fmt.Sprintf("%s/v1/secret/data/%s", strings.TrimRight(vaultAddr, "/"), secretPath)
+	mount, keyPath, _ := strings.Cut(secretPath, "/")
+	url := fmt.Sprintf("%s/v1/%s/data/%s", strings.TrimRight(vaultAddr, "/"), mount, keyPath)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
