@@ -202,6 +202,19 @@ func uploadViaSCP(host, user, keyPath, remotePath string, data []byte) error {
 		return fmt.Errorf("scp failed: %w", err)
 	}
 
+	// Make the file owned by appuser (UID 1000) so the container can read and write it
+	remoteFile := fmt.Sprintf("%s/%s", remotePath, cookieFileName)
+	fixPermsCmd := exec.Command("ssh",
+		"-i", keyPath,
+		"-o", "StrictHostKeyChecking=accept-new",
+		dest,
+		"chown", "1000:1000", remoteFile,
+	)
+	fixPermsCmd.Stderr = os.Stderr
+	if err := fixPermsCmd.Run(); err != nil {
+		return fmt.Errorf("failed to chown remote file: %w", err)
+	}
+
 	return nil
 }
 

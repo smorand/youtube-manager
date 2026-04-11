@@ -15,7 +15,7 @@
         <string>--key</string>
         <string>/Users/sebastien/.ssh/id_rsa</string>
         <string>--remote-path</string>
-        <string>/app/youtube-manager/cookies</string>
+        <string>/app/data/youtube-manager</string>
     </array>
 
     <key>EnvironmentVariables</key>
