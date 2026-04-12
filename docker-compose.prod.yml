@@ -9,6 +9,11 @@ services:
       - /app/data/youtube-manager/.env
     volumes:
       - /app/data/youtube-manager:/app/data/youtube-manager
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     networks:
       - proxy-network
 
