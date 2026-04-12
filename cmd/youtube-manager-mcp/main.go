@@ -9,13 +9,12 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"youtube-manager/internal/mcpserver"
+	"youtube-manager/internal/observability"
 )
 
 func main() {
 	// Log to stderr (stdout is used for MCP JSON-RPC in stdio mode)
-	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
-	handler := slog.NewTextHandler(os.Stderr, opts)
-	slog.SetDefault(slog.New(handler))
+	observability.InitLogger(os.Getenv("LOG_LEVEL"))
 
 	ctx := context.Background()
 
