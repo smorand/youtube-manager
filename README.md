@@ -340,4 +340,4 @@ This project is for personal use.
 
 ## Author
 
-Sebastien MORAND (sebastien.morand@*******)
+Sebastien MORAND (seb.morand@gmail.com)
